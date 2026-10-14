@@ -1,0 +1,30 @@
+services:
+  test:
+    build: .
+    image: obdlink-j2534-build:local
+    volumes:
+      - .:/src
+    command: >
+      sh -c "cmake -S . -B build/linux -G Ninja
+      && cmake --build build/linux
+      && ctest --test-dir build/linux --output-on-failure"
+
+  win32:
+    build: .
+    image: obdlink-j2534-build:local
+    volumes:
+      - .:/src
+    command: >
+      sh -c "cmake -S . -B build/win32 -G Ninja -DCMAKE_BUILD_TYPE=Release
+      -DCMAKE_TOOLCHAIN_FILE=cmake/mingw-w64-i686.cmake
+      && cmake --build build/win32"
+
+  win64:
+    build: .
+    image: obdlink-j2534-build:local
+    volumes:
+      - .:/src
+    command: >
+      sh -c "cmake -S . -B build/win64 -G Ninja -DCMAKE_BUILD_TYPE=Release
+      -DCMAKE_TOOLCHAIN_FILE=cmake/mingw-w64-x86_64.cmake
+      && cmake --build build/win64"
