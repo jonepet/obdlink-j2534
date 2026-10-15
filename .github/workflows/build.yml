@@ -40,11 +40,11 @@ jobs:
           TAG: v${{ steps.version.outputs.version }}
         run: |
           if gh release view "$TAG" > /dev/null 2>&1; then
-            echo "$TAG already released"
+            gh release edit "$TAG" --prerelease=false --latest
             exit 0
           fi
           gh release create "$TAG" dist/*.zip dist/*.zip.sha256 \
             --target "$GITHUB_SHA" \
             --title "OBDLink STN J2534 $TAG" \
-            --prerelease \
+            --latest \
             --generate-notes

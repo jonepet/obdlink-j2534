@@ -21,7 +21,7 @@ ISO-TP segmentation, flow control pacing (the ECU's STmin) and UDS response-pend
 
 ## Build
 
-Every push and pull request is built and tested by the GitHub Actions workflow in `.github/workflows/build.yml`. Each push to `main` with a new version in `CMakeLists.txt` publishes a pre-release `v<version>` with the installable zip and its SHA-256 checksum.
+Every push and pull request is built and tested by the GitHub Actions workflow in `.github/workflows/build.yml`. Each push to `main` with a new version in `CMakeLists.txt` publishes a release `v<version>` with the installable zip and its SHA-256 checksum.
 
 The same steps run locally in Docker:
 
