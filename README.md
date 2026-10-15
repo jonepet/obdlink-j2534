@@ -5,12 +5,12 @@
 >
 > **Using this driver can permanently damage vehicle modules, adapters and other connected devices, and leave them unrecoverable.**
 >
-> This driver has only been tested for **diagnostics and service procedures** with FORScan and Ford FDRS, an OBDLink EX and a single vehicle (see [Tested with FDRS](#tested-with-fdrs)). It has **not** been tested for module programming, flashing, configuration writes or any other operation that changes a vehicle module. A failed or interrupted module write can leave a module unusable and the vehicle inoperable.
+> This driver has only been tested with an OBDLink EX and a single vehicle: diagnostics with FORScan, and diagnostics, service procedures and module configuration with Ford FDRS (see [Tested with FDRS](#tested-with-fdrs)). It has **not** been tested for module programming or flashing. A failed or interrupted module write can leave a module unusable and the vehicle inoperable.
 >
 > The software is provided as is, without warranty of any kind. The authors accept no liability for damage to vehicles, modules, adapters or anything else resulting from its use.
 
 > [!CAUTION]
-> **No CAN FD.** OBDLink STN adapters only support classic CAN: the OBDLink Family Reference and Programming Manual (rev F, section 8.6) lists ISO 11898 and ISO 15765 presets with at most 8 data bytes per frame and no CAN FD mode. This is the same limitation as lower-cost pass-thru interfaces such as the VXDIAG VCX Nano and VCX SE, which VXDIAG lists without CAN FD support.
+> **No CAN FD.** OBDLink STN adapters only support classic CAN: the OBDLink Family Reference and Programming Manual (rev F, section 8.6) lists ISO 11898 and ISO 15765 presets with at most 8 data bytes per frame and no CAN FD mode.
 >
 > - Do not use this driver for modules or vehicle networks that require CAN FD. Use an interface with CAN FD support for those.
 > - The registry entry advertises no CAN FD protocols, and `PassThruConnect` rejects every protocol other than `CAN`, `ISO15765`, `CAN_PS` and `ISO15765_PS` with `ERR_INVALID_PROTOCOL_ID`.
@@ -39,7 +39,7 @@ docker compose run --rm package   # dist/obdlink-stn-j2534-<version>.zip
 3. In an elevated PowerShell in that folder:
 
    ```powershell
-   .\register.ps1 -ComPort COM5 -LogFile C:\obdlink\trace.log
+   .\register.ps1 -ComPort COM5 -LogFile C:\OBDLinkJ2534\trace.log
    ```
 
    `.\register.ps1 -Unregister` removes the registration.
@@ -71,7 +71,7 @@ Values under `HKLM\SOFTWARE\PassThruSupport.04.04\OBDLink STN` (32-bit view for 
 - Up to 64 message filters per channel.
 - No ISO 15765 extended addressing and no programming voltage (`PassThruSetProgrammingVoltage` accepts only `VOLTAGE_OFF`).
 - `BS_TX`, `STMIN_TX` (ECU values are always used), `ISO15765_WFT_MAX` (0), `BIT_SAMPLE_POINT` (80), `SYNC_JUMP_WIDTH` (15) and `CAN_MIXED_FORMAT` (0) are fixed and accept only those values.
-- After an adapter timeout or reset the device reports `ERR_DEVICE_NOT_CONNECTED` until it is closed and reopened; no transmission is retried.
+- After an adapter timeout or reset the device reports `ERR_DEVICE_NOT_CONNECTED` until it is closed and reopened.
 
 ## Tested with FDRS
 
@@ -82,13 +82,14 @@ Tested with Ford FDRS 50.5.2, the 32-bit DLL, an OBDLink EX and one vehicle.
 | Vehicle identification and network test | Works |
 | Reading DTCs | Works |
 | Service procedures | Works |
-| Module programming and configuration | Not tested |
+| Module configuration | Works |
+| Module programming | Not tested |
 
 FDRS logs some harmless errors with this driver, such as removed flow control filters and an unsupported `CAN_MIXED_FORMAT` setting, which it retries without.
 
 ## Status
 
-Work in progress. Diagnostics and service procedures work with FORScan and FDRS on the tested adapter and vehicle. Module programming and configuration writes are untested. CAN FD and ISO 15765 extended addressing are not supported.
+Work in progress. Diagnostics work with FORScan and FDRS, and service procedures and module configuration work with FDRS, on the tested adapter and vehicle. Module programming is untested. CAN FD and ISO 15765 extended addressing are not supported.
 
 ## Trademarks and affiliation
 
