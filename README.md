@@ -5,7 +5,7 @@
 >
 > **Using this driver can permanently damage vehicle modules, adapters and other connected devices, and leave them unrecoverable.**
 >
-> This driver has only been tested for **reading sensor values and scanning modules** with FORScan 2.3.71, an OBDLink EX (STN2231 v5.10.3) and a single vehicle. It has **not** been tested for module programming, flashing, configuration writes or any other operation that changes a vehicle module. A failed or interrupted module write can leave a module unusable and the vehicle inoperable.
+> This driver has only been tested for **diagnostics and service procedures** with FORScan and Ford FDRS, an OBDLink EX and a single vehicle (see [Tested with FDRS](#tested-with-fdrs)). It has **not** been tested for module programming, flashing, configuration writes or any other operation that changes a vehicle module. A failed or interrupted module write can leave a module unusable and the vehicle inoperable.
 >
 > The software is provided as is, without warranty of any kind. The authors accept no liability for damage to vehicles, modules, adapters or anything else resulting from its use.
 
@@ -21,18 +21,21 @@ ISO-TP segmentation, flow control pacing (the ECU's STmin) and UDS response-pend
 
 ## Build
 
-Everything builds in Docker:
+Every push and pull request is built and tested by the GitHub Actions workflow in `.github/workflows/build.yml`. Each push to `main` with a new version in `CMakeLists.txt` publishes a pre-release `v<version>` with the installable zip and its SHA-256 checksum.
+
+The same steps run locally in Docker:
 
 ```sh
-docker compose run --rm test    # Linux unit tests against an emulated STN
-docker compose run --rm win32   # build/win32/obdstn32.dll
-docker compose run --rm win64   # build/win64/obdstn64.dll
+docker compose run --rm test      # unit tests against an emulated STN
+docker compose run --rm win32     # build/win32/obdstn32.dll
+docker compose run --rm win64     # build/win64/obdstn64.dll
+docker compose run --rm package   # dist/obdlink-stn-j2534-<version>.zip
 ```
 
 ## Install on Windows
 
 1. Install the FTDI virtual COM port driver for the adapter and note its COM port (Device Manager → Ports).
-2. Copy `obdstn32.dll`, `obdstn64.dll` and `scripts/register.ps1` into one folder.
+2. Download `obdlink-stn-j2534-<version>.zip` from the GitHub releases and extract it to a permanent folder, for example `C:\OBDLinkJ2534`. The registry points at the DLLs in that folder.
 3. In an elevated PowerShell in that folder:
 
    ```powershell
@@ -65,9 +68,33 @@ Values under `HKLM\SOFTWARE\PassThruSupport.04.04\OBDLink STN` (32-bit view for 
 - The adapter receives only while a transmit runs: responses arriving later than `ResponseTimeoutMs` without a preceding `7F xx 78` are not received.
 - `PassThruWriteMsgs` completes each transmission before returning; its timeout argument is not used.
 - One CAN bus is active at a time; channels on different pins switch the adapter preset before each transmit.
+- Up to 64 message filters per channel.
 - No ISO 15765 extended addressing and no programming voltage (`PassThruSetProgrammingVoltage` accepts only `VOLTAGE_OFF`).
 - `BS_TX`, `STMIN_TX` (ECU values are always used), `ISO15765_WFT_MAX` (0), `BIT_SAMPLE_POINT` (80), `SYNC_JUMP_WIDTH` (15) and `CAN_MIXED_FORMAT` (0) are fixed and accept only those values.
 - After an adapter timeout or reset the device reports `ERR_DEVICE_NOT_CONNECTED` until it is closed and reopened; no transmission is retried.
+
+## Tested with FDRS
+
+Tested with Ford FDRS 50.5.2, the 32-bit DLL, an OBDLink EX and one vehicle.
+
+| Operation | Result |
+|---|---|
+| Vehicle identification and network test | Works |
+| Reading DTCs | Works |
+| Service procedures | Works |
+| Module programming and configuration | Not tested |
+
+FDRS logs some harmless errors with this driver, such as removed flow control filters and an unsupported `CAN_MIXED_FORMAT` setting, which it retries without.
+
+## Status
+
+Work in progress. Diagnostics and service procedures work with FORScan and FDRS on the tested adapter and vehicle. Module programming and configuration writes are untested. CAN FD and ISO 15765 extended addressing are not supported.
+
+## Trademarks and affiliation
+
+This is an independent project. It is not affiliated with, endorsed by or supported by OBD Solutions, Ford Motor Company, the FORScan developers or any other company or product named in this document.
+
+OBDLink, STN, Ford, FDRS, FORScan and all other product and company names are trademarks or registered trademarks of their respective owners. They are used only to identify the hardware and software this driver works with.
 
 ## License
 

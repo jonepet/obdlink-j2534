@@ -53,6 +53,24 @@ TEST(MessageFilters, RejectsReuseOfFlowControlIds)
     EXPECT_EQ(filters.add(j2534::filter_type::FlowControl, { &mask, &pattern, &otherTester }, filterId), j2534::status::NotUnique);
 }
 
+TEST(MessageFilters, AcceptsSixtyFourFlowControlFiltersAndRejectsMore)
+{
+    MessageFilters filters(ChannelKind::Iso15765);
+    const auto mask = idMessage(0xFFFFFFFF);
+    j2534::ULong filterId = 0;
+    for (std::uint32_t i = 0; i < 64; ++i) {
+        const auto pattern = idMessage(0x600 + i);
+        const auto flowControl = idMessage(0x700 + i);
+        ASSERT_EQ(filters.add(j2534::filter_type::FlowControl, { &mask, &pattern, &flowControl }, filterId), j2534::status::NoError) << i;
+    }
+
+    const auto pattern = idMessage(0x640);
+    const auto flowControl = idMessage(0x740);
+
+    EXPECT_EQ(filters.add(j2534::filter_type::FlowControl, { &mask, &pattern, &flowControl }, filterId), j2534::status::ExceededLimit);
+    EXPECT_EQ(filters.stnFlowControlFilters().size(), 64u);
+}
+
 TEST(MessageFilters, RejectsFilterTypeForWrongChannelKind)
 {
     MessageFilters isoTp(ChannelKind::Iso15765);

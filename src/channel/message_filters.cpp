@@ -146,7 +146,7 @@ long MessageFilters::validate(j2534::ULong type, const FilterMessages& messages)
     if (!sameShape(*messages.mask, *messages.pattern)) {
         return j2534::status::InvalidMsg;
     }
-    if (filters_.size() >= 10) {
+    if (filters_.size() >= 64) {
         return j2534::status::ExceededLimit;
     }
     if (isoTpChannel) {
