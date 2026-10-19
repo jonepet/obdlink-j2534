@@ -16,6 +16,10 @@ namespace obdlink {
 
 namespace {
 
+// ISO 15765-2: N_Bs and N_Cr maximum, and the largest STmin a receiver may request.
+constexpr std::chrono::milliseconds IsoTpFrameTimeout(1000);
+constexpr std::chrono::milliseconds MaxSeparationTime(127);
+
 std::string canIdHex(std::uint32_t id, bool extended)
 {
     return extended ? std::format("{:08X}", id) : std::format("{:03X}", id);
@@ -41,14 +45,12 @@ bool containsOk(const std::vector<StnLine>& lines)
 
 bool isTransmitFailure(StnStatus status)
 {
-    return std::ranges::contains(
+    return !std::ranges::contains(
         std::array {
-            StnStatus::Rejected,
-            StnStatus::BusFailure,
-            StnStatus::FlowControlTimeout,
-            StnStatus::OutOfMemory,
-            StnStatus::Stopped,
-            StnStatus::DeviceReset,
+            StnStatus::Ok,
+            StnStatus::NoData,
+            StnStatus::Overflow,
+            StnStatus::CorruptFrame,
         },
         status);
 }
@@ -66,13 +68,19 @@ StnAdapter::StnAdapter(StnLink& link, AdapterTiming timing)
 {
 }
 
-AdapterIdentity StnAdapter::initialize()
+AdapterIdentity StnAdapter::initialize(unsigned powerUpBaud)
 {
     link_.resynchronize(timing_.busyProbe, timing_.commandTimeout);
-    link_.execute("ATZ", timing_.resetTimeout);
-    for (const auto setting : std::array<std::string_view, 8> { "ATE0", "ATL0", "ATS1", "ATH1", "ATD0", "ATCAF1", "ATCFC1", "ATAT1" }) {
+    link_.reset(powerUpBaud, timing_.resetTimeout);
+    // FRPM: STCMM 1 acknowledges frames while monitoring; ATAT0 keeps the response timeout fixed
+    // at STPTO. STCTOR sets the ISO 15765-2 limits in place of the STN defaults of 75 and 150 ms.
+    static constexpr std::array<std::string_view, 9> settings {
+        "ATE0", "ATL0", "ATS1", "ATH1", "ATD0", "ATCAF1", "ATCFC1", "ATAT0", "STCMM 1",
+    };
+    for (const auto setting : settings) {
         expectOk(std::string(setting));
     }
+    expectOk(std::format("STCTOR {}, {}", IsoTpFrameTimeout.count(), IsoTpFrameTimeout.count()));
     padded_.reset();
 
     auto chip = singleLine("STI");
@@ -87,18 +95,45 @@ void StnAdapter::switchBaudRate(unsigned baud)
     link_.switchBaudRate(baud, timing_.commandTimeout);
 }
 
-void StnAdapter::applyBus(const BusSetup& setup)
+bool StnAdapter::applyBus(const BusSetup& setup, const std::optional<BusSetup>& current)
 {
-    expectOk("STPC");
-    expectOk(std::format("STP {}", setup.preset));
-    const auto baudCommand = std::format("STPBR {}", setup.baud);
-    const auto baudLines = link_.execute(baudCommand, timing_.commandTimeout);
-    if (!containsOk(baudLines)) {
-        throw StnBaudRateRejected(baudCommand + " failed: " + joinedText(baudLines));
+    const bool reselect = !current
+        || current->preset != setup.preset
+        || current->baud != setup.baud
+        || current->format != setup.format;
+    if (reselect) {
+        selectProtocol(setup);
     }
-    expectOk(setup.format == FrameFormat::IsoTp ? "ATCAF1" : "ATCAF0");
-    applyFilters(setup);
-    applyFlowControl(setup);
+    if (reselect || current->flowControlFilters != setup.flowControlFilters || current->passFilters != setup.passFilters) {
+        applyFilters(setup);
+    }
+    const bool flowControlChanged = reselect
+        || current->flowControlPairs != setup.flowControlPairs
+        || current->blockSize != setup.blockSize
+        || current->separationTime != setup.separationTime;
+    if (flowControlChanged) {
+        applyFlowControl(setup);
+    }
+    return reselect;
+}
+
+// FRPM 8.6: STP selects the protocol without opening it; STPO opens it.
+void StnAdapter::openProtocol()
+{
+    expectOk("STPO");
+}
+
+// FRPM 8.9: STM monitors with the current filters; the adapter sends no flow control frames
+// while monitoring, and leaving the monitor closes the protocol.
+void StnAdapter::monitor(std::chrono::milliseconds poll, const FrameSink& sink, const std::function<bool()>& keepRunning)
+{
+    const auto lineSink = [&sink](const StnLine& line) {
+        auto response = parseResponseLine(line.text);
+        if (auto* frame = std::get_if<CanFrame>(&response)) {
+            sink(ReceivedFrame { std::move(*frame), line.receivedAt });
+        }
+    };
+    link_.monitor("STM", poll, timing_.commandTimeout, lineSink, keepRunning);
 }
 
 TransmitOutcome StnAdapter::transmit(const TransmitRequest& request)
@@ -119,15 +154,15 @@ TransmitOutcome StnAdapter::transmit(const TransmitRequest& request)
         outcome.dataLost = outcome.dataLost || losesData(status);
         if (isTransmitFailure(status) && !outcome.failure) {
             outcome.failure = status;
+            outcome.failureLine = line.text;
         }
     };
 
-    const auto command = std::format(
-        "STPX h:{}, t:{}, l:{}",
-        canIdHex(request.id, request.extended),
-        timing_.responseTimeout.count(),
-        request.data.size());
+    const auto command = std::format("STPX h:{}, l:{}", canIdHex(request.id, request.extended), request.data.size());
     link_.executeWithPayload(command, bytesHex(request.data), transmitSilenceAllowance(request.data.size()), sink);
+    if (outcome.failure == StnStatus::BusFailure) {
+        outcome.failureLine += ", ATCS " + singleLine("ATCS");
+    }
     return outcome;
 }
 
@@ -147,12 +182,12 @@ void StnAdapter::closeProtocol()
     expectOk("STPC");
 }
 
-// Configured silence timeout plus the adapter's maximum separation time between consecutive
-// frames (127 ms, FRPM STCSTM) for each consecutive frame the payload needs.
+// ISO 15765-2 bounds the transmit at N_Bs plus the maximum STmin per consecutive frame (block
+// size 1); ISO 14229-2 bounds the response at P2*Server_max after each response-pending reply.
 std::chrono::milliseconds StnAdapter::transmitSilenceAllowance(std::size_t payloadSize) const
 {
     const auto consecutiveFrames = payloadSize <= MaxSingleFramePayload ? std::size_t { 0 } : (payloadSize - 6 + 7 - 1) / 7;
-    return timing_.transferSilenceTimeout + std::chrono::milliseconds(127) * consecutiveFrames;
+    return timing_.responsePendingTimeout + (IsoTpFrameTimeout + MaxSeparationTime) * consecutiveFrames;
 }
 
 void StnAdapter::expectOk(const std::string& command)
@@ -179,6 +214,18 @@ void StnAdapter::applyPadding(bool padded)
     }
     expectOk(padded ? "ATV0" : "ATV1");
     padded_ = padded;
+}
+
+void StnAdapter::selectProtocol(const BusSetup& setup)
+{
+    expectOk("STPC");
+    expectOk(std::format("STP {}", setup.preset));
+    const auto baudCommand = std::format("STPBR {}", setup.baud);
+    const auto baudLines = link_.execute(baudCommand, timing_.commandTimeout);
+    if (!containsOk(baudLines)) {
+        throw StnBaudRateRejected(baudCommand + " failed: " + joinedText(baudLines));
+    }
+    expectOk(setup.format == FrameFormat::IsoTp ? "ATCAF1" : "ATCAF0");
 }
 
 void StnAdapter::applyFilters(const BusSetup& setup)

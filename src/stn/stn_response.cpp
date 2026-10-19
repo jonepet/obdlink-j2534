@@ -15,7 +15,7 @@ namespace {
 
 constexpr std::size_t ExtendedIdBytes = 4;
 
-constexpr std::array<std::pair<std::string_view, StnStatus>, 17> StatusLines { {
+constexpr std::array<std::pair<std::string_view, StnStatus>, 18> StatusLines { {
     { "OK", StnStatus::Ok },
     { "NO DATA", StnStatus::NoData },
     { "?", StnStatus::Rejected },
@@ -25,6 +25,7 @@ constexpr std::array<std::pair<std::string_view, StnStatus>, 17> StatusLines { {
     { "FB ERROR", StnStatus::BusFailure },
     { "UNABLE TO CONNECT", StnStatus::BusFailure },
     { "FC RX TIMEOUT", StnStatus::FlowControlTimeout },
+    { "RMT BUF OVF", StnStatus::FlowControlOverflow },
     { "BUFFER FULL", StnStatus::Overflow },
     { "UART RX OVERFLOW", StnStatus::Overflow },
     { "OUT OF MEMORY", StnStatus::OutOfMemory },
@@ -125,12 +126,13 @@ StnResponse parseResponseLine(std::string_view line)
 
 std::string_view describe(StnStatus status)
 {
-    static constexpr std::array<std::pair<StnStatus, std::string_view>, 11> descriptions { {
+    static constexpr std::array<std::pair<StnStatus, std::string_view>, 12> descriptions { {
         { StnStatus::Ok, "OK" },
         { StnStatus::NoData, "no response" },
         { StnStatus::Rejected, "command rejected by adapter" },
         { StnStatus::BusFailure, "CAN bus error" },
         { StnStatus::FlowControlTimeout, "ECU sent no flow control frame" },
+        { StnStatus::FlowControlOverflow, "ECU flow control overflow: message too long" },
         { StnStatus::Overflow, "adapter buffer overflow, data lost" },
         { StnStatus::OutOfMemory, "message too large for adapter" },
         { StnStatus::CorruptFrame, "corrupt frame received" },

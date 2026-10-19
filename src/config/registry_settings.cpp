@@ -37,13 +37,13 @@ DeviceSettings loadRegistrySettings()
     DeviceSettings settings;
     settings.portName = readString("ComPort");
     settings.hostBaudRate = readDword("HostBaudRate", 115200);
-    settings.adapterBaudRate = readDword("AdapterBaudRate", 0);
+    settings.adapterBaudRate = readDword("AdapterBaudRate", 2000000);
     settings.logPath = readString("LogFile");
     settings.timing = AdapterTiming {
         readMilliseconds("CommandTimeoutMs", 1000),
         readMilliseconds("ResetTimeoutMs", 3000),
-        readMilliseconds("ResponseTimeoutMs", 200),
-        readMilliseconds("TransferSilenceTimeoutMs", 10000),
+        // ISO 14229-2 P2*Server_max.
+        std::chrono::milliseconds(5000),
         readMilliseconds("BusyProbeMs", 300),
     };
     return settings;

@@ -13,11 +13,18 @@ namespace obdlink::testing {
 
 // Emulates the STN UART protocol: CR-terminated commands answered with lines and a '>' prompt,
 // STPX l:<n> answered with DATA> and the scripted response lines for the payload that follows.
+// Bytes only get through when host and device run the same UART rate; STSBR switches the device
+// rate after its OK and ATZ returns it to the power-up rate.
 class FakeStn : public ByteStream {
 public:
+    static constexpr unsigned PowerUpBaud = 115200;
+
     void respond(const std::string& command, std::vector<std::string> lines);
     void respondToPayload(const std::string& payloadHex, std::vector<std::string> lines);
+    // Lines printed once STM starts; any single character then stops the monitor with STOPPED.
+    void monitorLines(std::vector<std::string> lines);
     void silence(const std::string& command);
+    void runAt(unsigned baud);
 
     std::vector<std::string> commands() const;
     std::vector<unsigned> baudRates() const;
@@ -33,16 +40,23 @@ private:
     void handleCommand(const std::string& line);
     void handlePayload(const std::string& hex);
     void emit(const std::vector<std::string>& lines);
+    void emitRaw(const std::string& bytes);
+    void switchRate(const std::string& command);
 
     mutable std::mutex mutex_;
     std::condition_variable changed_;
     std::map<std::string, std::vector<std::string>> responses_;
     std::map<std::string, std::vector<std::string>> payloadResponses_;
+    std::vector<std::string> monitorLines_;
+    bool monitoring_ = false;
     std::set<std::string> silent_;
     std::vector<std::string> commands_;
     std::vector<unsigned> baudRates_;
     std::string input_;
     std::string output_;
+    std::vector<unsigned> outputRates_;
+    unsigned deviceBaud_ = PowerUpBaud;
+    unsigned hostBaud_ = PowerUpBaud;
     bool awaitingPayload_ = false;
 };
 

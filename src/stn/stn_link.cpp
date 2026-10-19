@@ -79,6 +79,37 @@ void StnLink::switchBaudRate(unsigned baud, std::chrono::milliseconds timeout)
     expectTerminator(EventKind::Prompt, timeout, discardLine);
 }
 
+void StnLink::reset(unsigned powerUpBaud, std::chrono::milliseconds timeout)
+{
+    send("ATZ");
+    stream_.setBaudRate(powerUpBaud);
+    resetBuffers();
+    expectTerminator(EventKind::Prompt, timeout, discardLine);
+}
+
+void StnLink::monitor(
+    std::string_view command,
+    std::chrono::milliseconds poll,
+    std::chrono::milliseconds stopTimeout,
+    const LineSink& sink,
+    const std::function<bool()>& keepRunning)
+{
+    send(command);
+    while (keepRunning()) {
+        auto event = nextEvent(std::chrono::steady_clock::now() + poll);
+        if (event.kind == EventKind::Line) {
+            sink(event.line);
+            continue;
+        }
+        if (event.kind != EventKind::Timeout) {
+            return;
+        }
+    }
+    // FRPM 8.9: any single character stops monitoring and is discarded; STOPPED and the prompt follow.
+    writeTraced("X");
+    expectTerminator(EventKind::Prompt, stopTimeout, sink);
+}
+
 void StnLink::resynchronize(std::chrono::milliseconds busyProbe, std::chrono::milliseconds timeout)
 {
     stream_.discardInput();

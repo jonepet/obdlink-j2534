@@ -17,7 +17,17 @@
 
 A SAE J2534-1 v04.04 pass-thru DLL for OBDLink adapters with STN chips, connected as a COM port. It provides CAN and ISO 15765 channels on OBD pins 6/14 and, through the pin-switched protocols, on pins 3/11.
 
-ISO-TP segmentation, flow control pacing (the ECU's STmin) and UDS response-pending (`7F xx 78`) waits run in the STN firmware; the DLL drives the adapter with `STPX` and reassembles received frames.
+ISO-TP segmentation, flow control pacing and UDS response-pending (`7F xx 78`) handling run in the STN firmware.
+
+## How this differs from a dedicated J2534 device
+
+A purpose-built J2534 interface is designed around the pass-thru API. This project is different: the OBDLink is a serial diagnostic adapter, and this driver translates the J2534 calls into the adapter's own command set. Most of the real work — splitting long messages into frames, pacing them, waiting out a module that says "still working" — happens inside the adapter's firmware, so the driver can only do what that firmware allows. In practice that means:
+
+- **One bus at a time.** A dedicated device can keep several channels live at once. This adapter serves one CAN bus at a time and switches between the two pin pairs (6/14 and 3/11) before sending on the other one. Switching takes a moment, more so when many message filters are set.
+- **It mostly listens while it is sending.** The adapter collects replies in the window right after it sends a request. Between requests it can passively watch one bus, but it is not a full always-on receiver: a long multi-part reply that only begins after that window arrives incomplete. Dedicated hardware receives continuously.
+- **It is slower per message.** Every message crosses a serial link to the adapter and back, which adds overhead a built-in device does not have. It is quick enough for diagnostics, but not as fast as purpose-built hardware.
+- **Some settings are fixed or unavailable.** Block size and separation time (the module's own values are always used), extended addressing, programming voltage and CAN FD are fixed or not supported. Most tools accept this and carry on, but the behaviour is not identical to a full device.
+- **Not proven for programming.** It has been used for diagnostics, service procedures and module configuration, but never to flash firmware. A flash sends far more data over a much longer time and erases the module before writing — and a flash that is interrupted can leave a module unusable. Treat flashing as untested and risky.
 
 ## Build
 
@@ -54,24 +64,25 @@ Values under `HKLM\SOFTWARE\PassThruSupport.04.04\OBDLink STN` (32-bit view for 
 |---|---|---|---|
 | `ComPort` | string | — | Adapter COM port. A non-empty name passed to `PassThruOpen` overrides it. |
 | `HostBaudRate` | DWORD | 115200 | UART rate the adapter starts at. |
-| `AdapterBaudRate` | DWORD | 0 | Rate to switch to with `STSBR` after opening; 0 keeps `HostBaudRate`. |
-| `ResponseTimeoutMs` | DWORD | 200 | `STPX t:` wait for the first response frame. |
-| `TransferSilenceTimeoutMs` | DWORD | 10000 | Adapter silence after which the device is declared lost; each transmit adds 127 ms (the adapter's separation-time ceiling) per consecutive frame it has to pace. |
-| `CommandTimeoutMs` | DWORD | 1000 | Wait for AT/ST command prompts. |
-| `ResetTimeoutMs` | DWORD | 3000 | Wait for `ATZ`. |
+| `AdapterBaudRate` | DWORD | 2000000 | UART rate to switch to after opening. A lower value limits the rate; 0 keeps `HostBaudRate`. |
+| `CommandTimeoutMs` | DWORD | 1000 | Wait for the adapter to answer a configuration command. |
+| `ResetTimeoutMs` | DWORD | 3000 | Wait for the adapter to finish a reset. |
 | `BusyProbeMs` | DWORD | 300 | Wait when resynchronizing a possibly busy adapter. |
 | `LogFile` | string | empty | Appends every adapter command and response line with a microsecond timestamp. |
 
 ## Behaviour and limits
 
 - Supported protocols: `CAN`, `ISO15765`, `CAN_PS` and `ISO15765_PS` (`J1962_PINS` 0x060E or 0x030B), 11- and 29-bit IDs.
-- The adapter receives only while a transmit runs: responses arriving later than `ResponseTimeoutMs` without a preceding `7F xx 78` are not received.
+- After each transmit the adapter receives responses until none has arrived for its response timeout (the adapter's default, 102 ms).
+- Between transmits the adapter monitors one bus that has channels with receive filters. The adapter sends no flow control while monitoring, so a multi-frame response received this way delivers only its first frame.
+- Flow control and consecutive frame timeouts are the ISO 15765-2 N_Bs and N_Cr limits (1000 ms).
+- The device is declared lost when the adapter stays silent during a transmit longer than ISO 14229-2 P2*Server_max (5000 ms) plus N_Bs and the maximum STmin (127 ms) for each consecutive frame sent.
 - `PassThruWriteMsgs` completes each transmission before returning; its timeout argument is not used.
-- One CAN bus is active at a time; channels on different pins switch the adapter preset before each transmit.
+- One CAN bus is active at a time; channels on different pins switch the adapter between buses before each transmit.
 - Up to 64 message filters per channel.
 - No ISO 15765 extended addressing and no programming voltage (`PassThruSetProgrammingVoltage` accepts only `VOLTAGE_OFF`).
 - `BS_TX`, `STMIN_TX` (ECU values are always used), `ISO15765_WFT_MAX` (0), `BIT_SAMPLE_POINT` (80), `SYNC_JUMP_WIDTH` (15) and `CAN_MIXED_FORMAT` (0) are fixed and accept only those values.
-- After an adapter timeout or reset the device reports `ERR_DEVICE_NOT_CONNECTED` until it is closed and reopened.
+- A message that the adapter does not answer in time returns `ERR_TIMEOUT` for that call and leaves the device usable, so the application can retry. Only an adapter reset reports `ERR_DEVICE_NOT_CONNECTED` until the device is closed and reopened.
 
 ## Tested with FDRS
 
@@ -85,7 +96,7 @@ Tested with Ford FDRS 50.5.2, the 32-bit DLL, an OBDLink EX and one vehicle.
 | Module configuration | Works |
 | Module programming | Not tested |
 
-FDRS logs some harmless errors with this driver, such as removed flow control filters and an unsupported `CAN_MIXED_FORMAT` setting, which it retries without.
+FDRS logs errors for removing flow control filters and for the unsupported `CAN_MIXED_FORMAT` setting, and continues without that setting.
 
 ## Status
 

@@ -17,10 +17,22 @@ void FakeStn::respondToPayload(const std::string& payloadHex, std::vector<std::s
     payloadResponses_[payloadHex] = std::move(lines);
 }
 
+void FakeStn::monitorLines(std::vector<std::string> lines)
+{
+    std::lock_guard lock(mutex_);
+    monitorLines_ = std::move(lines);
+}
+
 void FakeStn::silence(const std::string& command)
 {
     std::lock_guard lock(mutex_);
     silent_.insert(command);
+}
+
+void FakeStn::runAt(unsigned baud)
+{
+    std::lock_guard lock(mutex_);
+    deviceBaud_ = baud;
 }
 
 std::vector<std::string> FakeStn::commands() const
@@ -45,6 +57,14 @@ void FakeStn::write(std::string_view bytes)
 {
     {
         std::lock_guard lock(mutex_);
+        if (hostBaud_ != deviceBaud_) {
+            return;
+        }
+        if (monitoring_ && !bytes.empty()) {
+            monitoring_ = false;
+            emit({ "STOPPED" });
+            bytes.remove_prefix(1);
+        }
         for (const char c : bytes) {
             if (c != '\r') {
                 input_.push_back(c);
@@ -67,9 +87,14 @@ std::size_t FakeStn::read(char* buffer, std::size_t capacity, std::chrono::milli
     if (!changed_.wait_for(lock, timeout, [this] { return !output_.empty(); })) {
         return 0;
     }
-    const auto count = std::min(capacity, output_.size());
+    const auto garbled = std::ranges::find(outputRates_, hostBaud_) - outputRates_.begin();
+    output_.erase(0, static_cast<std::size_t>(garbled));
+    outputRates_.erase(outputRates_.begin(), outputRates_.begin() + garbled);
+    const auto readable = std::ranges::find_if(outputRates_, [this](unsigned rate) { return rate != hostBaud_; }) - outputRates_.begin();
+    const auto count = std::min(capacity, static_cast<std::size_t>(readable));
     std::copy_n(output_.begin(), count, buffer);
     output_.erase(0, count);
+    outputRates_.erase(outputRates_.begin(), outputRates_.begin() + static_cast<std::ptrdiff_t>(count));
     return count;
 }
 
@@ -77,12 +102,14 @@ void FakeStn::setBaudRate(unsigned baud)
 {
     std::lock_guard lock(mutex_);
     baudRates_.push_back(baud);
+    hostBaud_ = baud;
 }
 
 void FakeStn::discardInput()
 {
     std::lock_guard lock(mutex_);
     output_.clear();
+    outputRates_.clear();
 }
 
 void FakeStn::handleCommand(const std::string& line)
@@ -92,8 +119,24 @@ void FakeStn::handleCommand(const std::string& line)
         return;
     }
     if (line.starts_with("STPX") && line.find("l:") != std::string::npos) {
-        output_ += "DATA>";
+        emitRaw("DATA>");
         awaitingPayload_ = true;
+        return;
+    }
+    if (line == "ATZ") {
+        deviceBaud_ = PowerUpBaud;
+        emit({ "ELM327 v1.4b" });
+        return;
+    }
+    if (line.starts_with("STSBR ")) {
+        switchRate(line);
+        return;
+    }
+    if (line == "STM") {
+        monitoring_ = true;
+        for (const auto& monitored : monitorLines_) {
+            emitRaw(monitored + "\r");
+        }
         return;
     }
     if (const auto found = responses_.find(line); found != responses_.end()) {
@@ -113,9 +156,22 @@ void FakeStn::handlePayload(const std::string& hex)
 void FakeStn::emit(const std::vector<std::string>& lines)
 {
     for (const auto& line : lines) {
-        output_ += line + "\r";
+        emitRaw(line + "\r");
     }
-    output_ += "\r>";
+    emitRaw("\r>");
+}
+
+void FakeStn::emitRaw(const std::string& bytes)
+{
+    output_ += bytes;
+    outputRates_.insert(outputRates_.end(), bytes.size(), deviceBaud_);
+}
+
+void FakeStn::switchRate(const std::string& command)
+{
+    emitRaw("OK\r");
+    deviceBaud_ = static_cast<unsigned>(std::stoul(command.substr(command.find(' ') + 1)));
+    emitRaw("\r>");
 }
 
 }

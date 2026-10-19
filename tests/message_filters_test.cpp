@@ -39,6 +39,30 @@ TEST(MessageFilters, FlowControlFilterDrivesMatchingAndAdapterSetup)
     EXPECT_EQ(filters.flowControlPairs(), (std::vector<FlowControlPair> { { 0x7E0, 0x7E8, false } }));
 }
 
+TEST(MessageFilters, AcceptsPaddingFlagOnFlowControlMessageOnly)
+{
+    MessageFilters filters(ChannelKind::Iso15765);
+    const auto mask = idMessage(0xFFFFFFFF);
+    const auto pattern = idMessage(0x7E8);
+    auto flowControl = idMessage(0x7E0);
+    flowControl.TxFlags = j2534::tx_flag::Iso15765FramePad;
+    j2534::ULong filterId = 0;
+
+    EXPECT_EQ(filters.add(j2534::filter_type::FlowControl, { &mask, &pattern, &flowControl }, filterId), j2534::status::NoError);
+}
+
+TEST(MessageFilters, RejectsMixedIdWidthsInOneFilter)
+{
+    MessageFilters filters(ChannelKind::Iso15765);
+    const auto mask = idMessage(0xFFFFFFFF);
+    const auto pattern = idMessage(0x7E8);
+    auto flowControl = idMessage(0x7E0);
+    flowControl.TxFlags = j2534::tx_flag::Can29BitId;
+    j2534::ULong filterId = 0;
+
+    EXPECT_EQ(filters.add(j2534::filter_type::FlowControl, { &mask, &pattern, &flowControl }, filterId), j2534::status::InvalidMsg);
+}
+
 TEST(MessageFilters, RejectsReuseOfFlowControlIds)
 {
     MessageFilters filters(ChannelKind::Iso15765);

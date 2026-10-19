@@ -15,8 +15,7 @@ namespace obdlink {
 struct AdapterTiming {
     std::chrono::milliseconds commandTimeout;
     std::chrono::milliseconds resetTimeout;
-    std::chrono::milliseconds responseTimeout;
-    std::chrono::milliseconds transferSilenceTimeout;
+    std::chrono::milliseconds responsePendingTimeout;
     std::chrono::milliseconds busyProbe;
 };
 
@@ -71,6 +70,7 @@ struct TransmitRequest {
 struct TransmitOutcome {
     std::vector<ReceivedFrame> frames;
     std::optional<StnStatus> failure;
+    std::string failureLine;
     bool dataLost = false;
 };
 
@@ -80,11 +80,21 @@ class StnAdapter {
 public:
     StnAdapter(StnLink& link, AdapterTiming timing);
 
-    AdapterIdentity initialize();
+    AdapterIdentity initialize(unsigned powerUpBaud);
 
     void switchBaudRate(unsigned baud);
 
-    void applyBus(const BusSetup& setup);
+    using FrameSink = std::function<void(ReceivedFrame)>;
+
+    // Brings the adapter from the current setup (none when unknown) to the requested one,
+    // selecting the protocol again only when the preset, bit rate or frame format changes.
+    // Returns whether it did, which leaves the protocol closed.
+    bool applyBus(const BusSetup& setup, const std::optional<BusSetup>& current);
+
+    void openProtocol();
+
+    // Receives frames with the current filters until keepRunning() turns false; closes the protocol.
+    void monitor(std::chrono::milliseconds poll, const FrameSink& sink, const std::function<bool()>& keepRunning);
 
     TransmitOutcome transmit(const TransmitRequest& request);
 
@@ -97,6 +107,7 @@ private:
     void expectOk(const std::string& command);
     std::string singleLine(const std::string& command);
     void applyPadding(bool padded);
+    void selectProtocol(const BusSetup& setup);
     void applyFilters(const BusSetup& setup);
     void applyFlowControl(const BusSetup& setup);
 

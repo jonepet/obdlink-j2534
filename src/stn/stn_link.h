@@ -44,6 +44,18 @@ public:
     // STSBR: the device answers OK at the current rate, then switches and prompts at the new one.
     void switchBaudRate(unsigned baud, std::chrono::milliseconds timeout);
 
+    // ATZ: the device restarts at its power-up rate, whatever rate an earlier STSBR selected.
+    void reset(unsigned powerUpBaud, std::chrono::milliseconds timeout);
+
+    // Runs a monitoring command, passing every line to the sink, until keepRunning() turns false
+    // (checked at least every poll interval), then stops it and waits for the prompt.
+    void monitor(
+        std::string_view command,
+        std::chrono::milliseconds poll,
+        std::chrono::milliseconds stopTimeout,
+        const LineSink& sink,
+        const std::function<bool()>& keepRunning);
+
     // Brings the device back to an idle prompt with an empty command line, whether it was idle
     // or still executing. Never sends a lone CR: the device repeats the last command on one.
     void resynchronize(std::chrono::milliseconds busyProbe, std::chrono::milliseconds timeout);

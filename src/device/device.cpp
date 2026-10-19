@@ -5,6 +5,7 @@
 #include <exception>
 #include <format>
 #include <ranges>
+#include <utility>
 #include <vector>
 
 #include "device/device_error.h"
@@ -19,6 +20,25 @@ std::string_view withoutTerminator(std::string_view text)
         text.remove_suffix(1);
     }
     return text;
+}
+
+// ISO 15765-2: the server indicates a request only after its last frame, so the first frame from
+// the paired response ID follows the end of the transmit. Without one, the prompt is the bound.
+std::chrono::steady_clock::time_point transmittedAt(
+    const TransmitRequest& request,
+    const BusSetup& setup,
+    const std::vector<ReceivedFrame>& frames)
+{
+    const auto isResponse = [&](const ReceivedFrame& received) {
+        return std::ranges::any_of(setup.flowControlPairs, [&](const FlowControlPair& pair) {
+            return pair.testerId == request.id
+                && pair.extended == request.extended
+                && pair.ecuId == received.frame.id
+                && pair.extended == received.frame.extended;
+        });
+    };
+    const auto response = std::ranges::find_if(frames, isResponse);
+    return response == frames.end() ? std::chrono::steady_clock::now() : response->receivedAt;
 }
 
 }
@@ -38,17 +58,38 @@ Device::Device(std::unique_ptr<ByteStream> stream, DeviceSettings settings, j253
 
 Device::~Device() = default;
 
+Device::LinkUse::LinkUse(Device& device)
+    : device_(device)
+{
+    {
+        std::lock_guard wakeLock(device_.monitorMutex_);
+        ++device_.linkWaiters_;
+    }
+    lock_ = std::unique_lock(device_.linkMutex_);
+    std::lock_guard wakeLock(device_.monitorMutex_);
+    --device_.linkWaiters_;
+}
+
+Device::LinkUse::~LinkUse()
+{
+    lock_.unlock();
+    {
+        std::lock_guard wakeLock(device_.monitorMutex_);
+        ++device_.linkReleases_;
+    }
+    device_.monitorWake_.notify_all();
+}
+
 template <typename Operation>
 auto Device::withLink(Operation operation)
 {
-    std::lock_guard linkLock(linkMutex_);
+    LinkUse link(*this);
     requireAvailable();
     try {
         return operation();
     } catch (const StnTimeout& error) {
-        unavailable_ = true;
         trace_.write("ERR", error.what());
-        throw DeviceUnavailable(error.what());
+        throw;
     }
 }
 
@@ -65,6 +106,7 @@ void Device::open()
     }
     trace_.write("INFO", std::format("adapter {} / {}", identity_.chip, identity_.device));
     scheduler_ = std::jthread([this](std::stop_token stop) { runScheduler(stop); });
+    monitor_ = std::jthread([this](std::stop_token stop) { runMonitor(stop); });
 }
 
 void Device::close()
@@ -72,6 +114,10 @@ void Device::close()
     scheduler_.request_stop();
     if (scheduler_.joinable()) {
         scheduler_.join();
+    }
+    monitor_.request_stop();
+    if (monitor_.joinable()) {
+        monitor_.join();
     }
     std::exception_ptr failure;
     {
@@ -122,19 +168,27 @@ long Device::connect(j2534::ULong protocolId, j2534::ULong flags, j2534::ULong b
     if (const auto setup = channel->busSetup()) {
         withLink([this, &setup] { ensureBus(*setup); });
     }
-    std::lock_guard registryLock(registryMutex_);
-    if (protocolConnectedLocked(protocolId)) {
-        return j2534::status::ChannelInUse;
+    {
+        std::lock_guard registryLock(registryMutex_);
+        if (protocolConnectedLocked(protocolId)) {
+            return j2534::status::ChannelInUse;
+        }
+        channelId = nextChannelId_++;
+        channels_.emplace(channelId, std::move(channel));
     }
-    channelId = nextChannelId_++;
-    channels_.emplace(channelId, std::move(channel));
+    restartMonitor();
     return j2534::status::NoError;
+}
+
+void Device::restartMonitor()
+{
+    LinkUse link(*this);
 }
 
 long Device::disconnect(j2534::ULong channelId)
 {
     {
-        std::lock_guard linkLock(linkMutex_);
+        LinkUse link(*this);
         std::lock_guard registryLock(registryMutex_);
         const auto found = channels_.find(channelId);
         if (found == channels_.end()) {
@@ -188,6 +242,7 @@ long Device::writeMessages(j2534::ULong channelId, std::span<const j2534::PassTh
 
 long Device::startFilter(j2534::ULong channelId, j2534::ULong type, const FilterMessages& messages, j2534::ULong& filterId)
 {
+    LinkUse link(*this);
     std::lock_guard registryLock(registryMutex_);
     const auto found = channels_.find(channelId);
     if (found == channels_.end()) {
@@ -198,6 +253,7 @@ long Device::startFilter(j2534::ULong channelId, j2534::ULong type, const Filter
 
 long Device::stopFilter(j2534::ULong channelId, j2534::ULong filterId)
 {
+    LinkUse link(*this);
     std::lock_guard registryLock(registryMutex_);
     const auto found = channels_.find(channelId);
     if (found == channels_.end()) {
@@ -224,7 +280,7 @@ long Device::stopPeriodic(j2534::ULong channelId, j2534::ULong periodicId)
 {
     long status = j2534::status::InvalidChannelId;
     {
-        std::lock_guard linkLock(linkMutex_);
+        LinkUse link(*this);
         std::lock_guard registryLock(registryMutex_);
         const auto found = channels_.find(channelId);
         if (found != channels_.end()) {
@@ -256,7 +312,7 @@ long Device::channelIoctl(j2534::ULong channelId, j2534::ULong ioctlId, void* in
     }
     long status = j2534::status::InvalidChannelId;
     {
-        std::lock_guard linkLock(linkMutex_);
+        LinkUse link(*this);
         std::lock_guard registryLock(registryMutex_);
         const auto found = channels_.find(channelId);
         if (found != channels_.end()) {
@@ -322,21 +378,92 @@ void Device::requireAvailable() const
 void Device::initializeAt(unsigned baud)
 {
     stream_->setBaudRate(baud);
-    identity_ = adapter_.initialize();
-    if (settings_.adapterBaudRate != 0 && settings_.adapterBaudRate != baud) {
+    identity_ = adapter_.initialize(settings_.hostBaudRate);
+    if (settings_.adapterBaudRate != 0 && settings_.adapterBaudRate != settings_.hostBaudRate) {
         adapter_.switchBaudRate(settings_.adapterBaudRate);
     }
     appliedBus_.reset();
+    protocolOpen_ = false;
 }
 
 void Device::ensureBus(const BusSetup& setup)
 {
-    if (appliedBus_ == setup) {
-        return;
+    if (appliedBus_ != setup) {
+        const auto current = std::exchange(appliedBus_, std::nullopt);
+        if (adapter_.applyBus(setup, current)) {
+            protocolOpen_ = false;
+        }
+        appliedBus_ = setup;
     }
-    appliedBus_.reset();
-    adapter_.applyBus(setup);
-    appliedBus_ = setup;
+    if (!protocolOpen_) {
+        adapter_.openProtocol();
+        protocolOpen_ = true;
+    }
+}
+
+void Device::runMonitor(std::stop_token stop)
+{
+    unsigned long seenReleases = 0;
+    while (!stop.stop_requested()) {
+        {
+            std::unique_lock wakeLock(monitorMutex_);
+            monitorWake_.wait(wakeLock, stop, [&] { return linkWaiters_ == 0 && linkReleases_ != seenReleases; });
+            seenReleases = linkReleases_;
+        }
+        std::unique_lock linkLock(linkMutex_);
+        if (stop.stop_requested() || linkWaiters_ > 0 || unavailable_ || closed_) {
+            continue;
+        }
+        if (const auto setup = monitoredBus()) {
+            monitorLocked(*setup, stop);
+        }
+    }
+}
+
+void Device::monitorLocked(const BusSetup& setup, std::stop_token stop)
+{
+    try {
+        ensureBus(setup);
+        protocolOpen_ = false;
+        adapter_.monitor(
+            std::chrono::milliseconds(5),
+            [this, &setup](ReceivedFrame frame) { deliverMonitored(setup, std::move(frame)); },
+            [this, &stop] { return linkWaiters_ == 0 && !stop.stop_requested(); });
+    } catch (const StnError& error) {
+        trace_.write("ERR", error.what());
+        std::lock_guard registryLock(registryMutex_);
+        for (const auto& channel : channels_ | std::views::values) {
+            if (channel->busSetup() == setup) {
+                channel->recordBackgroundFailure(error.what());
+            }
+        }
+    }
+}
+
+std::optional<BusSetup> Device::monitoredBus() const
+{
+    std::lock_guard registryLock(registryMutex_);
+    auto receiving = channels_ | std::views::values | std::views::transform([](const auto& channel) {
+        return channel->busSetup();
+    }) | std::views::filter([](const auto& setup) {
+        return setup && (!setup->passFilters.empty() || !setup->flowControlFilters.empty());
+    });
+    if (std::ranges::contains(receiving, appliedBus_)) {
+        return appliedBus_;
+    }
+    const auto first = receiving.begin();
+    return first == receiving.end() ? std::nullopt : *first;
+}
+
+void Device::deliverMonitored(const BusSetup& setup, ReceivedFrame frame)
+{
+    std::lock_guard registryLock(registryMutex_);
+    const std::vector<ReceivedFrame> frames { std::move(frame) };
+    for (const auto& channel : channels_ | std::views::values) {
+        if (channel->busSetup() == setup) {
+            channel->deliverReceived(frames, clock_);
+        }
+    }
 }
 
 long Device::send(const std::shared_ptr<Channel>& channel, const j2534::PassThruMsg& message)
@@ -390,7 +517,7 @@ void Device::transmit(
 
     std::lock_guard registryLock(registryMutex_);
     if (!outcome.failure) {
-        channel->deliverTransmitted(message, clock_.now());
+        channel->deliverTransmitted(message, clock_.at(transmittedAt(request, setup, outcome.frames)));
     }
     channel->deliverReceived(outcome.frames, clock_);
     if (outcome.dataLost) {
@@ -399,7 +526,7 @@ void Device::transmit(
     if (!outcome.failure) {
         return;
     }
-    const auto reason = std::string(describe(*outcome.failure));
+    const auto reason = std::format("{} (adapter: \"{}\")", describe(*outcome.failure), outcome.failureLine);
     trace_.write("ERR", reason);
     if (*outcome.failure == StnStatus::DeviceReset) {
         unavailable_ = true;

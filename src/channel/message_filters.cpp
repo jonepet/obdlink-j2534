@@ -40,7 +40,8 @@ std::uint32_t stnId(const std::vector<std::uint8_t>& bytes, bool extended)
 
 bool sameShape(const j2534::PassThruMsg& a, const j2534::PassThruMsg& b)
 {
-    return a.DataSize == b.DataSize && a.TxFlags == b.TxFlags;
+    const auto addressing = j2534::tx_flag::Can29BitId | j2534::tx_flag::Iso15765AddrType;
+    return a.DataSize == b.DataSize && (a.TxFlags & addressing) == (b.TxFlags & addressing);
 }
 
 }

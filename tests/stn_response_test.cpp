@@ -29,6 +29,7 @@ TEST(StnResponse, ClassifiesStatusLines)
 {
     EXPECT_EQ(std::get<StnStatus>(parseResponseLine("NO DATA")), StnStatus::NoData);
     EXPECT_EQ(std::get<StnStatus>(parseResponseLine("FC RX TIMEOUT")), StnStatus::FlowControlTimeout);
+    EXPECT_EQ(std::get<StnStatus>(parseResponseLine("RMT BUF OVF")), StnStatus::FlowControlOverflow);
     EXPECT_EQ(std::get<StnStatus>(parseResponseLine("CAN ERROR")), StnStatus::BusFailure);
     EXPECT_EQ(std::get<StnStatus>(parseResponseLine("BUFFER FULL")), StnStatus::Overflow);
     EXPECT_EQ(std::get<StnStatus>(parseResponseLine("?")), StnStatus::Rejected);

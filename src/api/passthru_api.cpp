@@ -96,6 +96,9 @@ long PassThruApi::guarded(Call call)
     } catch (const StnBaudRateRejected& error) {
         setLastError(error.what());
         return j2534::status::InvalidBaudrate;
+    } catch (const StnTimeout& error) {
+        setLastError(error.what());
+        return j2534::status::Timeout;
     } catch (const std::exception& error) {
         setLastError(error.what());
         return j2534::status::Failed;

@@ -7,9 +7,6 @@ param(
     [Parameter(ParameterSetName = 'Register')]
     [string] $LogFile = '',
 
-    [Parameter(ParameterSetName = 'Register')]
-    [int] $AdapterBaudRate = 0,
-
     [Parameter(Mandatory = $true, ParameterSetName = 'Unregister')]
     [switch] $Unregister
 )
@@ -46,7 +43,6 @@ foreach ($entry in @(
     $key.SetValue('CAN_PS', 1, [Microsoft.Win32.RegistryValueKind]::DWord)
     $key.SetValue('ISO15765_PS', 1, [Microsoft.Win32.RegistryValueKind]::DWord)
     $key.SetValue('ComPort', $ComPort, [Microsoft.Win32.RegistryValueKind]::String)
-    $key.SetValue('AdapterBaudRate', $AdapterBaudRate, [Microsoft.Win32.RegistryValueKind]::DWord)
     $key.SetValue('LogFile', $LogFile, [Microsoft.Win32.RegistryValueKind]::String)
     $key.Close()
     Write-Host "Registered $dllPath in the $($entry.View) view"

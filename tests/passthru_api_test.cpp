@@ -52,7 +52,7 @@ DeviceSettings testSettings()
     DeviceSettings settings;
     settings.portName = "COM9";
     settings.hostBaudRate = 115200;
-    settings.timing = AdapterTiming { 200ms, 200ms, 100ms, 300ms, 20ms };
+    settings.timing = AdapterTiming { 200ms, 200ms, 300ms, 20ms };
     return settings;
 }
 
@@ -133,11 +133,35 @@ TEST_F(PassThruApiTest, OpenConfiguresAdapterSession)
 
     ASSERT_EQ(api_.open(nullptr, &deviceId), j2534::status::NoError);
 
-    for (const auto* command : { "ATZ", "ATE0", "ATS1", "ATH1", "ATCAF1", "ATCFC1", "STI" }) {
+    for (const auto* command : { "ATZ", "ATE0", "ATS1", "ATH1", "ATCAF1", "ATCFC1", "STCMM 1", "STCTOR 1000, 1000", "STI" }) {
         EXPECT_TRUE(commandSent(command)) << command;
     }
-    EXPECT_EQ(device_->baudRates(), (std::vector<unsigned> { 115200 }));
+    EXPECT_EQ(device_->baudRates(), (std::vector<unsigned> { 115200, testing::FakeStn::PowerUpBaud }));
     EXPECT_EQ(api_.open(nullptr, &deviceId), j2534::status::DeviceInUse);
+}
+
+TEST(PassThruApiOpen, RecoversAdapterLeftAtSwitchedBaudRate)
+{
+    auto device = std::make_shared<testing::FakeStn>();
+    device->respond("STI", { "STN2232 v5.10.3" });
+    device->respond("STDI", { "OBDLink EX r1.0.0" });
+    device->runAt(2000000);
+    PassThruApi api(
+        [] {
+            auto settings = testSettings();
+            settings.adapterBaudRate = 2000000;
+            return settings;
+        },
+        [device](const DeviceSettings&) -> std::unique_ptr<ByteStream> { return std::make_unique<SharedStream>(device); },
+        "test");
+    j2534::ULong deviceId = 0;
+
+    ASSERT_EQ(api.open(nullptr, &deviceId), j2534::status::NoError);
+    ASSERT_EQ(api.close(deviceId), j2534::status::NoError);
+    ASSERT_EQ(api.open(nullptr, &deviceId), j2534::status::NoError);
+
+    EXPECT_TRUE(std::ranges::contains(device->commands(), "STSBR 2000000"));
+    EXPECT_EQ(device->baudRates().back(), 2000000u);
 }
 
 TEST_F(PassThruApiTest, OpenRejectsNonStnAdapter)
@@ -155,6 +179,98 @@ TEST_F(PassThruApiTest, ConnectSelectsHighSpeedIsoTpPreset)
 
     EXPECT_TRUE(commandSent("STP 33"));
     EXPECT_TRUE(commandSent("STPBR 500000"));
+    EXPECT_TRUE(commandSent("STPO"));
+}
+
+TEST_F(PassThruApiTest, ReceivesFramesWhileNoTransmitRuns)
+{
+    device_->monitorLines({ "59E 9E 10 FF FF FF FF FF FF" });
+    ASSERT_EQ(api_.open(nullptr, &deviceId_), j2534::status::NoError);
+    ASSERT_EQ(api_.connect(deviceId_, j2534::protocol::Can, 0, 500000, &channelId_), j2534::status::NoError);
+    const auto mask = j2534::makeMessage(j2534::protocol::Can, 0, 0, 0xFFFFFFFF, {});
+    const auto pattern = j2534::makeMessage(j2534::protocol::Can, 0, 0, 0x59E, {});
+    j2534::ULong filterId = 0;
+    ASSERT_EQ(api_.startFilter(channelId_, j2534::filter_type::Pass, &mask, &pattern, nullptr, &filterId), j2534::status::NoError);
+
+    std::array<j2534::PassThruMsg, 1> messages {};
+    j2534::ULong count = 1;
+    ASSERT_EQ(api_.readMessages(channelId_, messages.data(), &count, 1000), j2534::status::NoError);
+
+    EXPECT_EQ(dataOf(messages[0]), (std::vector<std::uint8_t> { 0x00, 0x00, 0x05, 0x9E, 0x9E, 0x10, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF }));
+    EXPECT_TRUE(commandSent("STCMM 1"));
+    EXPECT_TRUE(commandSent("STM"));
+}
+
+TEST_F(PassThruApiTest, MonitorFailureIsReportedToReceivingChannel)
+{
+    ASSERT_EQ(api_.open(nullptr, &deviceId_), j2534::status::NoError);
+    ASSERT_EQ(api_.connect(deviceId_, j2534::protocol::Can, 0, 500000, &channelId_), j2534::status::NoError);
+    device_->respond("STFAC", { "?" });
+    const auto mask = j2534::makeMessage(j2534::protocol::Can, 0, 0, 0xFFFFFFFF, {});
+    const auto pattern = j2534::makeMessage(j2534::protocol::Can, 0, 0, 0x59E, {});
+    j2534::ULong filterId = 0;
+    ASSERT_EQ(api_.startFilter(channelId_, j2534::filter_type::Pass, &mask, &pattern, nullptr, &filterId), j2534::status::NoError);
+
+    std::array<j2534::PassThruMsg, 1> messages {};
+    j2534::ULong count = 1;
+    api_.readMessages(channelId_, messages.data(), &count, 200);
+    count = 1;
+
+    EXPECT_EQ(api_.readMessages(channelId_, messages.data(), &count, 0), j2534::status::Failed);
+    EXPECT_NE(lastError().find("STFAC failed"), std::string::npos) << lastError();
+}
+
+TEST_F(PassThruApiTest, TxDoneIsNotStampedAfterTheResponse)
+{
+    openAndConnect();
+    device_->respondToPayload("22F188", { "7E8 03 7F 22 31" });
+
+    ASSERT_EQ(write(isoMessage(0x7E0, { 0x22, 0xF1, 0x88 })), j2534::status::NoError);
+    const auto messages = read(2);
+    ASSERT_EQ(messages.size(), 2u);
+    EXPECT_NE(messages[0].RxStatus & j2534::rx_status::TxIndication, 0u);
+    EXPECT_LE(messages[0].Timestamp, messages[1].Timestamp);
+}
+
+TEST_F(PassThruApiTest, BusErrorFailsTransmitWithoutResending)
+{
+    openAndConnect();
+    device_->respondToPayload("22F188F188F188F188", { "CAN ERROR" });
+    device_->respond("ATCS", { "T:7F R:00" });
+
+    EXPECT_EQ(write(isoMessage(0x7E0, { 0x22, 0xF1, 0x88, 0xF1, 0x88, 0xF1, 0x88, 0xF1, 0x88 })), j2534::status::Failed);
+    EXPECT_EQ(std::ranges::count(device_->commands(), std::string("PAYLOAD 22F188F188F188F188")), 1);
+    EXPECT_EQ(lastError(), "CAN bus error (adapter: \"CAN ERROR, ATCS T:7F R:00\")");
+}
+
+TEST_F(PassThruApiTest, FlowControlOverflowFailsTransmitWithoutTxDone)
+{
+    openAndConnect();
+    device_->respondToPayload("22F188F188F188F188", { "RMT BUF OVF" });
+
+    EXPECT_EQ(write(isoMessage(0x7E0, { 0x22, 0xF1, 0x88, 0xF1, 0x88, 0xF1, 0x88, 0xF1, 0x88 })), j2534::status::Failed);
+    EXPECT_EQ(lastError(), "ECU flow control overflow: message too long (adapter: \"RMT BUF OVF\")");
+    EXPECT_TRUE(read(4).empty());
+}
+
+TEST_F(PassThruApiTest, UnrecognizedAdapterReplyFailsTransmit)
+{
+    openAndConnect();
+    device_->respondToPayload("22F188", { "SOMETHING NEW" });
+
+    EXPECT_EQ(write(isoMessage(0x7E0, { 0x22, 0xF1, 0x88 })), j2534::status::Failed);
+    EXPECT_NE(lastError().find("SOMETHING NEW"), std::string::npos) << lastError();
+}
+
+TEST_F(PassThruApiTest, FilterChangeKeepsProtocolOpen)
+{
+    openAndConnect();
+    ASSERT_EQ(write(isoMessage(0x7E0, { 0x22, 0xF1, 0x88 })), j2534::status::NoError);
+
+    const auto commands = device_->commands();
+    EXPECT_EQ(std::ranges::count(commands, std::string("STPC")), 1);
+    EXPECT_TRUE(commandSent("STFFCA 7E8, 7FF"));
+    EXPECT_TRUE(commandSent("STCFCPA 7E0, 7E8"));
 }
 
 TEST_F(PassThruApiTest, ConnectReportsRejectedBaudRate)
@@ -175,7 +291,7 @@ TEST_F(PassThruApiTest, SingleFrameRequestQueuesTxDoneThenResponse)
 
     EXPECT_TRUE(commandSent("STFFCA 7E8, 7FF"));
     EXPECT_TRUE(commandSent("STCFCPA 7E0, 7E8"));
-    EXPECT_TRUE(commandSent("STPX h:7E0, t:100, l:2"));
+    EXPECT_TRUE(commandSent("STPX h:7E0, l:2"));
     ASSERT_EQ(messages.size(), 2u);
     EXPECT_EQ(messages[0].RxStatus, j2534::rx_status::TxMsgType | j2534::rx_status::TxIndication);
     EXPECT_EQ(dataOf(messages[0]), (std::vector<std::uint8_t> { 0x00, 0x00, 0x07, 0xE0 }));
@@ -222,7 +338,7 @@ TEST_F(PassThruApiTest, MissingFlowControlFromEcuFailsWithoutTxDone)
     device_->respondToPayload("36010102030405060708", { "FC RX TIMEOUT" });
 
     EXPECT_EQ(write(isoMessage(0x7E0, { 0x36, 0x01, 1, 2, 3, 4, 5, 6, 7, 8 })), j2534::status::Failed);
-    EXPECT_EQ(lastError(), "ECU sent no flow control frame");
+    EXPECT_EQ(lastError(), "ECU sent no flow control frame (adapter: \"FC RX TIMEOUT\")");
     EXPECT_TRUE(read(1).empty());
 }
 
@@ -282,17 +398,14 @@ TEST_F(PassThruApiTest, PeriodicMessageIsTransmittedUntilStopped)
     EXPECT_EQ(api_.stopPeriodic(channelId_, periodicId), j2534::status::NoError);
 }
 
-TEST_F(PassThruApiTest, SilentAdapterMakesDeviceUnavailableUntilReopened)
+TEST_F(PassThruApiTest, TimedOutTransmitReturnsTimeoutAndKeepsDeviceUsable)
 {
     openAndConnect();
-    device_->silence("STPX h:7E0, t:100, l:2");
+    device_->silence("STPX h:7E0, l:2");
+    device_->respondToPayload("22F188", { "7E8 03 7F 22 31" });
 
-    EXPECT_EQ(write(isoMessage(0x7E0, { 0x10, 0x02 })), j2534::status::DeviceNotConnected);
-    EXPECT_EQ(write(isoMessage(0x7E0, { 0x10, 0x03 })), j2534::status::DeviceNotConnected);
-    ASSERT_EQ(api_.close(deviceId_), j2534::status::NoError);
-
-    EXPECT_EQ(api_.open(nullptr, &deviceId_), j2534::status::NoError);
-    EXPECT_EQ(api_.connect(deviceId_, j2534::protocol::Iso15765, 0, 500000, &channelId_), j2534::status::NoError);
+    EXPECT_EQ(write(isoMessage(0x7E0, { 0x10, 0x02 })), j2534::status::Timeout);
+    EXPECT_EQ(write(isoMessage(0x7E0, { 0x22, 0xF1, 0x88 })), j2534::status::NoError);
 }
 
 TEST_F(PassThruApiTest, PinSwitchedChannelUsesMediumSpeedPinsOnceSelected)

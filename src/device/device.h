@@ -25,6 +25,8 @@ namespace obdlink {
 
 // One opened adapter. Adapter I/O is serialized by the link mutex; channel state by the
 // registry mutex, which is always taken after the link mutex and never held during I/O.
+// While no caller needs the link, a monitor thread holds it to receive frames for channels with
+// receive filters; every other user takes the link through LinkUse, which stops that monitor.
 class Device {
 public:
     Device(std::unique_ptr<ByteStream> stream, DeviceSettings settings, j2534::ULong firstChannelId);
@@ -66,6 +68,24 @@ public:
 
 private:
     using IoctlHandler = long (Device::*)(Channel&, void*, void*);
+
+    class LinkUse {
+    public:
+        explicit LinkUse(Device& device);
+        ~LinkUse();
+        LinkUse(const LinkUse&) = delete;
+        LinkUse& operator=(const LinkUse&) = delete;
+
+    private:
+        Device& device_;
+        std::unique_lock<std::mutex> lock_;
+    };
+
+    void restartMonitor();
+    void runMonitor(std::stop_token stop);
+    void monitorLocked(const BusSetup& setup, std::stop_token stop);
+    std::optional<BusSetup> monitoredBus() const;
+    void deliverMonitored(const BusSetup& setup, ReceivedFrame frame);
 
     bool protocolConnected(j2534::ULong protocolId) const;
     bool protocolConnectedLocked(j2534::ULong protocolId) const;
@@ -119,10 +139,16 @@ private:
     std::map<j2534::ULong, std::shared_ptr<Channel>> channels_;
     j2534::ULong nextChannelId_;
     std::optional<BusSetup> appliedBus_;
+    bool protocolOpen_ = false;
     std::atomic<bool> unavailable_ { false };
     std::atomic<bool> closed_ { false };
     unsigned long schedulerGeneration_ = 0;
+    std::mutex monitorMutex_;
+    std::condition_variable_any monitorWake_;
+    std::atomic<unsigned> linkWaiters_ { 0 };
+    unsigned long linkReleases_ = 0;
     std::jthread scheduler_;
+    std::jthread monitor_;
 };
 
 }

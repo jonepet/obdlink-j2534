@@ -13,6 +13,7 @@ enum class StnStatus {
     Rejected,
     BusFailure,
     FlowControlTimeout,
+    FlowControlOverflow,
     Overflow,
     OutOfMemory,
     CorruptFrame,
