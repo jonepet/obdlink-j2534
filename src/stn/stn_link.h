@@ -35,11 +35,14 @@ public:
     void executeStreaming(std::string_view command, std::chrono::milliseconds timeout, const LineSink& sink);
 
     // For STPX l:<n>: sends the command, waits for the DATA> prompt, then sends the hex payload.
+    // Once isComplete() turns true after a delivered line, the device's receive is interrupted and
+    // everything up to the prompt, including the resulting STOPPED, is discarded.
     void executeWithPayload(
         std::string_view command,
         std::string_view hexPayload,
         std::chrono::milliseconds timeout,
-        const LineSink& sink);
+        const LineSink& sink,
+        const std::function<bool()>& isComplete = {});
 
     // STSBR: the device answers OK at the current rate, then switches and prompts at the new one.
     void switchBaudRate(unsigned baud, std::chrono::milliseconds timeout);
@@ -61,7 +64,7 @@ public:
     void resynchronize(std::chrono::milliseconds busyProbe, std::chrono::milliseconds timeout);
 
 private:
-    enum class EventKind { Line, Prompt, DataPrompt, Timeout };
+    enum class EventKind { Line, Prompt, DataPrompt, Timeout, Completed };
 
     struct Event {
         EventKind kind;
@@ -73,8 +76,16 @@ private:
     Event nextEvent(std::chrono::steady_clock::time_point deadline);
     std::optional<Event> drainInbox();
     std::optional<Event> consume(char c);
-    EventKind drainUntilTerminator(std::chrono::milliseconds silenceTimeout, const LineSink& sink);
-    void expectTerminator(EventKind expected, std::chrono::milliseconds silenceTimeout, const LineSink& sink);
+    EventKind drainUntilTerminator(
+        std::chrono::milliseconds silenceTimeout,
+        const LineSink& sink,
+        const std::function<bool()>& isComplete = {});
+    void expectTerminator(
+        EventKind expected,
+        std::chrono::milliseconds silenceTimeout,
+        const LineSink& sink,
+        const std::function<bool()>& isComplete = {});
+    void interruptReceive(std::chrono::milliseconds timeout);
     void resetBuffers();
 
     ByteStream& stream_;

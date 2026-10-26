@@ -17,6 +17,19 @@ void FakeStn::respondToPayload(const std::string& payloadHex, std::vector<std::s
     payloadResponses_[payloadHex] = std::move(lines);
 }
 
+void FakeStn::respondToPayloadWithoutPrompt(const std::string& payloadHex, std::vector<std::string> lines)
+{
+    std::lock_guard lock(mutex_);
+    payloadResponses_[payloadHex] = std::move(lines);
+    promptWithheld_.insert(payloadHex);
+}
+
+bool FakeStn::receiveInterrupted() const
+{
+    std::lock_guard lock(mutex_);
+    return receiveInterrupted_;
+}
+
 void FakeStn::monitorLines(std::vector<std::string> lines)
 {
     std::lock_guard lock(mutex_);
@@ -60,8 +73,10 @@ void FakeStn::write(std::string_view bytes)
         if (hostBaud_ != deviceBaud_) {
             return;
         }
-        if (monitoring_ && !bytes.empty()) {
+        if ((monitoring_ || receiving_) && !bytes.empty()) {
+            receiveInterrupted_ = receiveInterrupted_ || receiving_;
             monitoring_ = false;
+            receiving_ = false;
             emit({ "STOPPED" });
             bytes.remove_prefix(1);
         }
@@ -150,7 +165,18 @@ void FakeStn::handlePayload(const std::string& hex)
 {
     commands_.push_back("PAYLOAD " + hex);
     const auto found = payloadResponses_.find(hex);
-    emit(found == payloadResponses_.end() ? std::vector<std::string> { "NO DATA" } : found->second);
+    if (found == payloadResponses_.end()) {
+        emit({ "NO DATA" });
+        return;
+    }
+    if (!promptWithheld_.contains(hex)) {
+        emit(found->second);
+        return;
+    }
+    for (const auto& line : found->second) {
+        emitRaw(line + "\r");
+    }
+    receiving_ = true;
 }
 
 void FakeStn::emit(const std::vector<std::string>& lines)

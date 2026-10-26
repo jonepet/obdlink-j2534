@@ -60,6 +60,20 @@ bool losesData(StnStatus status)
     return status == StnStatus::Overflow || status == StnStatus::CorruptFrame;
 }
 
+// ISO 14229-1: negative response 0x7F, service, NRC 0x78 (requestCorrectlyReceived-ResponsePending).
+bool isResponsePending(const std::vector<std::uint8_t>& payload)
+{
+    return payload.size() == 3 && payload[0] == 0x7F && payload[2] == 0x78;
+}
+
+bool completesResponse(IsoTpReceiver& receiver, const CanFrame& frame)
+{
+    return std::ranges::any_of(receiver.accept(frame), [](const IsoTpEvent& event) {
+        const auto* message = std::get_if<IsoTpMessage>(&event);
+        return message && !isResponsePending(message->payload);
+    });
+}
+
 }
 
 StnAdapter::StnAdapter(StnLink& link, AdapterTiming timing)
@@ -72,10 +86,8 @@ AdapterIdentity StnAdapter::initialize(unsigned powerUpBaud)
 {
     link_.resynchronize(timing_.busyProbe, timing_.commandTimeout);
     link_.reset(powerUpBaud, timing_.resetTimeout);
-    // FRPM: STCMM 1 acknowledges frames while monitoring; ATAT0 keeps the response timeout fixed
-    // at STPTO. STCTOR sets the ISO 15765-2 limits in place of the STN defaults of 75 and 150 ms.
     static constexpr std::array<std::string_view, 9> settings {
-        "ATE0", "ATL0", "ATS1", "ATH1", "ATD0", "ATCAF1", "ATCFC1", "ATAT0", "STCMM 1",
+        "ATE0", "ATL0", "ATS1", "ATH1", "ATD0", "ATCAF1", "ATCFC1", "ATAT1", "STCMM 1",
     };
     for (const auto setting : settings) {
         expectOk(std::string(setting));
@@ -101,6 +113,7 @@ bool StnAdapter::applyBus(const BusSetup& setup, const std::optional<BusSetup>& 
         || current->preset != setup.preset
         || current->baud != setup.baud
         || current->format != setup.format;
+    format_ = setup.format;
     if (reselect) {
         selectProtocol(setup);
     }
@@ -141,9 +154,13 @@ TransmitOutcome StnAdapter::transmit(const TransmitRequest& request)
     applyPadding(request.padded);
 
     TransmitOutcome outcome;
-    const auto sink = [this, &outcome](const StnLine& line) {
+    IsoTpReceiver receiver;
+    bool complete = false;
+    const bool isoTp = format_ == FrameFormat::IsoTp;
+    const auto sink = [this, &outcome, &receiver, &complete, isoTp](const StnLine& line) {
         auto response = parseResponseLine(line.text);
         if (auto* frame = std::get_if<CanFrame>(&response)) {
+            complete = complete || (isoTp && completesResponse(receiver, *frame));
             outcome.frames.push_back(ReceivedFrame { std::move(*frame), line.receivedAt });
             return;
         }
@@ -159,7 +176,12 @@ TransmitOutcome StnAdapter::transmit(const TransmitRequest& request)
     };
 
     const auto command = std::format("STPX h:{}, l:{}", canIdHex(request.id, request.extended), request.data.size());
-    link_.executeWithPayload(command, bytesHex(request.data), transmitSilenceAllowance(request.data.size()), sink);
+    link_.executeWithPayload(
+        command,
+        bytesHex(request.data),
+        transmitSilenceAllowance(request.data.size()),
+        sink,
+        [&complete] { return complete; });
     if (outcome.failure == StnStatus::BusFailure) {
         outcome.failureLine += ", ATCS " + singleLine("ATCS");
     }

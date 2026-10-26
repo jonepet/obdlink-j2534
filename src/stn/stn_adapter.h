@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <string>
 #include <vector>
@@ -114,6 +115,7 @@ private:
     StnLink& link_;
     AdapterTiming timing_;
     std::optional<bool> padded_;
+    FrameFormat format_ = FrameFormat::IsoTp;
 };
 
 }

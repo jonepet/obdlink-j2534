@@ -7,6 +7,9 @@ param(
     [Parameter(ParameterSetName = 'Register')]
     [string] $LogFile = '',
 
+    [Parameter(ParameterSetName = 'Register')]
+    [switch] $LowLatency,
+
     [Parameter(Mandatory = $true, ParameterSetName = 'Unregister')]
     [switch] $Unregister
 )
@@ -46,4 +49,24 @@ foreach ($entry in @(
     $key.SetValue('LogFile', $LogFile, [Microsoft.Win32.RegistryValueKind]::String)
     $key.Close()
     Write-Host "Registered $dllPath in the $($entry.View) view"
+}
+
+if ($LowLatency) {
+    # Opt-in: the FTDI latency timer defaults to 16 ms, delaying every adapter response by that much.
+    $deviceParameters = Get-ChildItem 'HKLM:\SYSTEM\CurrentControlSet\Enum\FTDIBUS' -Recurse -ErrorAction SilentlyContinue |
+        Where-Object { $_.PSChildName -eq 'Device Parameters' -and (Get-ItemProperty $_.PSPath).PortName -eq $ComPort }
+    foreach ($parameters in $deviceParameters) {
+        Set-ItemProperty -Path $parameters.PSPath -Name 'LatencyTimer' -Value 2 -Type DWord
+        Write-Host "Set FTDI LatencyTimer=2 ms for $ComPort"
+    }
+    # The VCP driver only reads the value when the devnode starts, so reload it instead of a replug.
+    foreach ($device in @(Get-PnpDevice -Class Ports -ErrorAction SilentlyContinue | Where-Object { $_.FriendlyName -like "*($ComPort)*" })) {
+        try {
+            Disable-PnpDevice -InstanceId $device.InstanceId -Confirm:$false -ErrorAction Stop
+            Enable-PnpDevice -InstanceId $device.InstanceId -Confirm:$false -ErrorAction Stop
+            Write-Host "Reloaded $ComPort so the new latency timer applies immediately"
+        } catch {
+            Write-Host "Set the latency timer for $ComPort; unplug and replug the adapter to apply it"
+        }
+    }
 }

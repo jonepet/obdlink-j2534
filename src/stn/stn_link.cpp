@@ -50,12 +50,13 @@ void StnLink::executeWithPayload(
     std::string_view command,
     std::string_view hexPayload,
     std::chrono::milliseconds timeout,
-    const LineSink& sink)
+    const LineSink& sink,
+    const std::function<bool()>& isComplete)
 {
     send(command);
     expectTerminator(EventKind::DataPrompt, timeout, sink);
     send(hexPayload);
-    expectTerminator(EventKind::Prompt, timeout, sink);
+    expectTerminator(EventKind::Prompt, timeout, sink, isComplete);
 }
 
 void StnLink::switchBaudRate(unsigned baud, std::chrono::milliseconds timeout)
@@ -141,9 +142,17 @@ void StnLink::writeTraced(std::string_view bytes)
     stream_.write(bytes);
 }
 
-void StnLink::expectTerminator(EventKind expected, std::chrono::milliseconds silenceTimeout, const LineSink& sink)
+void StnLink::expectTerminator(
+    EventKind expected,
+    std::chrono::milliseconds silenceTimeout,
+    const LineSink& sink,
+    const std::function<bool()>& isComplete)
 {
-    const auto terminator = drainUntilTerminator(silenceTimeout, sink);
+    const auto terminator = drainUntilTerminator(silenceTimeout, sink, isComplete);
+    if (terminator == EventKind::Completed) {
+        interruptReceive(silenceTimeout);
+        return;
+    }
     if (terminator == EventKind::Timeout) {
         throw StnTimeout("no prompt after " + lastCommand_);
     }
@@ -152,7 +161,20 @@ void StnLink::expectTerminator(EventKind expected, std::chrono::milliseconds sil
     }
 }
 
-StnLink::EventKind StnLink::drainUntilTerminator(std::chrono::milliseconds silenceTimeout, const LineSink& sink)
+// A prompt already received means the device is idle, where a stray character would corrupt the next command.
+void StnLink::interruptReceive(std::chrono::milliseconds timeout)
+{
+    if (drainUntilTerminator(std::chrono::milliseconds::zero(), discardLine) == EventKind::Prompt) {
+        return;
+    }
+    writeTraced("X");
+    expectTerminator(EventKind::Prompt, timeout, discardLine);
+}
+
+StnLink::EventKind StnLink::drainUntilTerminator(
+    std::chrono::milliseconds silenceTimeout,
+    const LineSink& sink,
+    const std::function<bool()>& isComplete)
 {
     while (true) {
         auto event = nextEvent(std::chrono::steady_clock::now() + silenceTimeout);
@@ -160,6 +182,9 @@ StnLink::EventKind StnLink::drainUntilTerminator(std::chrono::milliseconds silen
             return event.kind;
         }
         sink(event.line);
+        if (isComplete && isComplete()) {
+            return EventKind::Completed;
+        }
     }
 }
 

@@ -332,6 +332,33 @@ TEST_F(PassThruApiTest, ResponsePendingIsFollowedByFinalResponse)
     EXPECT_EQ(dataOf(messages[2]), (std::vector<std::uint8_t> { 0x00, 0x00, 0x07, 0xE8, 0x71, 0x01, 0xFF, 0x00, 0x00 }));
 }
 
+TEST_F(PassThruApiTest, CompleteResponseInterruptsAdapterReceiveWindow)
+{
+    openAndConnect();
+    device_->respondToPayloadWithoutPrompt("1003", { "7E8 06 50 03 00 32 01 F4 00" });
+
+    ASSERT_EQ(write(isoMessage(0x7E0, { 0x10, 0x03 })), j2534::status::NoError);
+    const auto messages = read(2);
+
+    EXPECT_TRUE(device_->receiveInterrupted());
+    ASSERT_EQ(messages.size(), 2u);
+    EXPECT_EQ(dataOf(messages[1]), (std::vector<std::uint8_t> { 0x00, 0x00, 0x07, 0xE8, 0x50, 0x03, 0x00, 0x32, 0x01, 0xF4 }));
+}
+
+TEST_F(PassThruApiTest, FinalResponseAfterPendingIsDeliveredBeforeInterrupt)
+{
+    openAndConnect();
+    device_->respondToPayloadWithoutPrompt("3101FF00", { "7E8 03 7F 31 78", "7E8 05 71 01 FF 00 00" });
+
+    ASSERT_EQ(write(isoMessage(0x7E0, { 0x31, 0x01, 0xFF, 0x00 })), j2534::status::NoError);
+    const auto messages = read(3);
+
+    EXPECT_TRUE(device_->receiveInterrupted());
+    ASSERT_EQ(messages.size(), 3u);
+    EXPECT_EQ(dataOf(messages[1]), (std::vector<std::uint8_t> { 0x00, 0x00, 0x07, 0xE8, 0x7F, 0x31, 0x78 }));
+    EXPECT_EQ(dataOf(messages[2]), (std::vector<std::uint8_t> { 0x00, 0x00, 0x07, 0xE8, 0x71, 0x01, 0xFF, 0x00, 0x00 }));
+}
+
 TEST_F(PassThruApiTest, MissingFlowControlFromEcuFailsWithoutTxDone)
 {
     openAndConnect();

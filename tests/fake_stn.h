@@ -21,6 +21,10 @@ public:
 
     void respond(const std::string& command, std::vector<std::string> lines);
     void respondToPayload(const std::string& payloadHex, std::vector<std::string> lines);
+    // Like respondToPayload, but the prompt stays withheld until the host sends a character,
+    // which stops the receive with STOPPED.
+    void respondToPayloadWithoutPrompt(const std::string& payloadHex, std::vector<std::string> lines);
+    bool receiveInterrupted() const;
     // Lines printed once STM starts; any single character then stops the monitor with STOPPED.
     void monitorLines(std::vector<std::string> lines);
     void silence(const std::string& command);
@@ -48,7 +52,10 @@ private:
     std::map<std::string, std::vector<std::string>> responses_;
     std::map<std::string, std::vector<std::string>> payloadResponses_;
     std::vector<std::string> monitorLines_;
+    std::set<std::string> promptWithheld_;
     bool monitoring_ = false;
+    bool receiving_ = false;
+    bool receiveInterrupted_ = false;
     std::set<std::string> silent_;
     std::vector<std::string> commands_;
     std::vector<unsigned> baudRates_;

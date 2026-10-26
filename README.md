@@ -56,6 +56,16 @@ docker compose run --rm package   # dist/obdlink-stn-j2534-<version>.zip
 
 The script registers the 32-bit DLL in the 32-bit registry view (`HKLM\SOFTWARE\WOW6432Node\PassThruSupport.04.04`) and the 64-bit DLL in the native view.
 
+### Faster response timing (optional)
+
+FTDI COM ports ship with a 16 ms latency timer that delays every reply from the adapter by up to that long, which dominates per-message round-trip time. Adding `-LowLatency` lowers it to 2 ms for the adapter's port and reloads the port so the change applies without unplugging it:
+
+```powershell
+.\register.ps1 -ComPort COM5 -LowLatency
+```
+
+This is off by default and opt-in, because it changes a Windows setting on the FTDI port device. The same value can be set by hand in Device Manager → the port → Properties → Port Settings → Advanced → Latency Timer.
+
 ## Settings
 
 Values under `HKLM\SOFTWARE\PassThruSupport.04.04\OBDLink STN` (32-bit view for the 32-bit DLL):
@@ -73,7 +83,7 @@ Values under `HKLM\SOFTWARE\PassThruSupport.04.04\OBDLink STN` (32-bit view for 
 ## Behaviour and limits
 
 - Supported protocols: `CAN`, `ISO15765`, `CAN_PS` and `ISO15765_PS` (`J1962_PINS` 0x060E or 0x030B), 11- and 29-bit IDs.
-- After each transmit the adapter receives responses until none has arrived for its response timeout (the adapter's default, 102 ms).
+- After each transmit the adapter receives responses with adaptive timing: it returns once the gap since the last frame exceeds the learned inter-frame time, bounded by its response timeout (the adapter's default, 102 ms) as the maximum.
 - Between transmits the adapter monitors one bus that has channels with receive filters. The adapter sends no flow control while monitoring, so a multi-frame response received this way delivers only its first frame.
 - Flow control and consecutive frame timeouts are the ISO 15765-2 N_Bs and N_Cr limits (1000 ms).
 - The device is declared lost when the adapter stays silent during a transmit longer than ISO 14229-2 P2*Server_max (5000 ms) plus N_Bs and the maximum STmin (127 ms) for each consecutive frame sent.
