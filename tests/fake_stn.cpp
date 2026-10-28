@@ -24,6 +24,13 @@ void FakeStn::respondToPayloadWithoutPrompt(const std::string& payloadHex, std::
     promptWithheld_.insert(payloadHex);
 }
 
+void FakeStn::respondToPayloadWithLatePrompt(const std::string& payloadHex, std::vector<std::string> lines)
+{
+    std::lock_guard lock(mutex_);
+    payloadResponses_[payloadHex] = std::move(lines);
+    promptLate_.insert(payloadHex);
+}
+
 bool FakeStn::receiveInterrupted() const
 {
     std::lock_guard lock(mutex_);
@@ -66,6 +73,14 @@ bool FakeStn::waitForCommand(const std::string& command, std::chrono::millisecon
     return changed_.wait_for(lock, timeout, [&] { return std::ranges::contains(commands_, command); });
 }
 
+bool FakeStn::waitForCommandCount(const std::string& command, std::size_t count, std::chrono::milliseconds timeout)
+{
+    std::unique_lock lock(mutex_);
+    return changed_.wait_for(lock, timeout, [&] {
+        return static_cast<std::size_t>(std::ranges::count(commands_, command)) >= count;
+    });
+}
+
 void FakeStn::write(std::string_view bytes)
 {
     {
@@ -73,11 +88,16 @@ void FakeStn::write(std::string_view bytes)
         if (hostBaud_ != deviceBaud_) {
             return;
         }
+        if (promptPending_ && !bytes.empty()) {
+            promptPending_ = false;
+            emitRaw("\r>");
+        }
         if ((monitoring_ || receiving_) && !bytes.empty()) {
             receiveInterrupted_ = receiveInterrupted_ || receiving_;
             monitoring_ = false;
             receiving_ = false;
             emit({ "STOPPED" });
+            commandTruncated_ = bytes.front() != 'X';
             bytes.remove_prefix(1);
         }
         for (const char c : bytes) {
@@ -86,6 +106,11 @@ void FakeStn::write(std::string_view bytes)
                 continue;
             }
             auto line = std::exchange(input_, {});
+            if (std::exchange(commandTruncated_, false)) {
+                commands_.push_back(line);
+                emit({ "?" });
+                continue;
+            }
             if (std::exchange(awaitingPayload_, false)) {
                 handlePayload(line);
                 continue;
@@ -167,6 +192,13 @@ void FakeStn::handlePayload(const std::string& hex)
     const auto found = payloadResponses_.find(hex);
     if (found == payloadResponses_.end()) {
         emit({ "NO DATA" });
+        return;
+    }
+    if (promptLate_.contains(hex)) {
+        for (const auto& line : found->second) {
+            emitRaw(line + "\r");
+        }
+        promptPending_ = true;
         return;
     }
     if (!promptWithheld_.contains(hex)) {

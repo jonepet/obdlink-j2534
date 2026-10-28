@@ -86,6 +86,7 @@ private:
         const LineSink& sink,
         const std::function<bool()>& isComplete = {});
     void interruptReceive(std::chrono::milliseconds timeout);
+    void interrupt(std::chrono::milliseconds timeout, const LineSink& sink);
     void resetBuffers();
 
     ByteStream& stream_;

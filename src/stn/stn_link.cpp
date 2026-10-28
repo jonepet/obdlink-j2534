@@ -106,9 +106,7 @@ void StnLink::monitor(
             return;
         }
     }
-    // FRPM 8.9: any single character stops monitoring and is discarded; STOPPED and the prompt follow.
-    writeTraced("X");
-    expectTerminator(EventKind::Prompt, stopTimeout, sink);
+    interrupt(stopTimeout, sink);
 }
 
 void StnLink::resynchronize(std::chrono::milliseconds busyProbe, std::chrono::milliseconds timeout)
@@ -167,7 +165,25 @@ void StnLink::interruptReceive(std::chrono::milliseconds timeout)
     if (drainUntilTerminator(std::chrono::milliseconds::zero(), discardLine) == EventKind::Prompt) {
         return;
     }
+    interrupt(timeout, discardLine);
+}
+
+// FRPM 8.9: a character sent while the device runs a command stops it and is discarded; STOPPED
+// and the prompt follow. A prompt without STOPPED means the command had already ended, so the
+// device kept the character as the start of a new command line; "X" and CR end that line as
+// one rejected command.
+void StnLink::interrupt(std::chrono::milliseconds timeout, const LineSink& sink)
+{
     writeTraced("X");
+    bool stopped = false;
+    expectTerminator(EventKind::Prompt, timeout, [&stopped, &sink](const StnLine& line) {
+        stopped = stopped || line.text == "STOPPED";
+        sink(line);
+    });
+    if (stopped) {
+        return;
+    }
+    writeTraced(std::string("X") + CommandTerminator);
     expectTerminator(EventKind::Prompt, timeout, discardLine);
 }
 

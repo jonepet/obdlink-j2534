@@ -118,6 +118,9 @@ private:
     template <typename Operation>
     auto withLink(Operation operation);
 
+    // Returns the adapter to an idle prompt after a failed exchange; one that cannot be recovered makes the device unavailable.
+    void resynchronizeAdapter();
+
     long getConfig(Channel& channel, void* input, void* output);
     long setConfig(Channel& channel, void* input, void* output);
     long clearTxBuffer(Channel& channel, void* input, void* output);

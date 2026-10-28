@@ -89,7 +89,18 @@ auto Device::withLink(Operation operation)
         return operation();
     } catch (const StnTimeout& error) {
         trace_.write("ERR", error.what());
+        resynchronizeAdapter();
         throw;
+    }
+}
+
+void Device::resynchronizeAdapter()
+{
+    try {
+        link_.resynchronize(settings_.timing.busyProbe, settings_.timing.commandTimeout);
+    } catch (const StnError& error) {
+        trace_.write("ERR", error.what());
+        unavailable_ = true;
     }
 }
 
@@ -207,6 +218,7 @@ long Device::readMessages(j2534::ULong channelId, std::span<j2534::PassThruMsg> 
     if (!channel) {
         return j2534::status::InvalidChannelId;
     }
+    requireAvailable();
     throwBackgroundFailure(*channel);
     const auto messages = channel->rxQueue().pop(out.size(), timeout);
     std::ranges::copy(messages, out.begin());
@@ -429,8 +441,12 @@ void Device::monitorLocked(const BusSetup& setup, std::stop_token stop)
             std::chrono::milliseconds(5),
             [this, &setup](ReceivedFrame frame) { deliverMonitored(setup, std::move(frame)); },
             [this, &stop] { return linkWaiters_ == 0 && !stop.stop_requested(); });
+    } catch (const StnTimeout& error) {
+        trace_.write("ERR", error.what());
+        resynchronizeAdapter();
     } catch (const StnError& error) {
         trace_.write("ERR", error.what());
+        resynchronizeAdapter();
         std::lock_guard registryLock(registryMutex_);
         for (const auto& channel : channels_ | std::views::values) {
             if (channel->busSetup() == setup) {
@@ -578,17 +594,12 @@ void Device::sendDuePeriodic(std::unique_lock<std::mutex>& registryLock)
         | std::views::join
         | std::ranges::to<std::vector>();
     registryLock.unlock();
-    std::vector<std::pair<std::shared_ptr<Channel>, std::string>> failures;
     for (const auto& entry : due) {
-        if (auto reason = sendPeriodicReportingFailure(entry)) {
-            failures.emplace_back(entry.channel, std::move(*reason));
+        if (const auto reason = sendPeriodicReportingFailure(entry)) {
+            trace_.write("ERR", *reason);
         }
     }
     registryLock.lock();
-    for (const auto& [channel, reason] : failures) {
-        trace_.write("ERR", reason);
-        channel->recordBackgroundFailure(reason);
-    }
 }
 
 std::optional<std::string> Device::sendPeriodicReportingFailure(const DuePeriodic& entry)

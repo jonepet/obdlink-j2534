@@ -232,6 +232,20 @@ TEST_F(PassThruApiTest, TxDoneIsNotStampedAfterTheResponse)
     EXPECT_LE(messages[0].Timestamp, messages[1].Timestamp);
 }
 
+TEST_F(PassThruApiTest, UnansweredRequestQueuesTxDoneImmediately)
+{
+    openAndConnect();
+
+    ASSERT_EQ(write(isoMessage(0x7E0, { 0x11, 0x81 })), j2534::status::NoError);
+    const auto messages = read(2);
+
+    ASSERT_EQ(messages.size(), 1u);
+    EXPECT_EQ(messages[0].ProtocolID, j2534::protocol::Iso15765);
+    EXPECT_EQ(messages[0].RxStatus, j2534::rx_status::TxMsgType | j2534::rx_status::TxIndication);
+    EXPECT_EQ(messages[0].ExtraDataIndex, 0u);
+    EXPECT_EQ(dataOf(messages[0]), (std::vector<std::uint8_t> { 0x00, 0x00, 0x07, 0xE0 }));
+}
+
 TEST_F(PassThruApiTest, BusErrorFailsTransmitWithoutResending)
 {
     openAndConnect();
@@ -425,6 +439,64 @@ TEST_F(PassThruApiTest, PeriodicMessageIsTransmittedUntilStopped)
     EXPECT_EQ(api_.stopPeriodic(channelId_, periodicId), j2534::status::NoError);
 }
 
+TEST_F(PassThruApiTest, InterruptCrossingAdapterPromptLeavesNoStrayCharacter)
+{
+    openAndConnect();
+    device_->respondToPayloadWithLatePrompt("22F188", { "7E8 03 7F 22 31" });
+    device_->respondToPayload("22F189", { "7E8 03 7F 22 31" });
+
+    ASSERT_EQ(write(isoMessage(0x7E0, { 0x22, 0xF1, 0x88 })), j2534::status::NoError);
+    EXPECT_EQ(write(isoMessage(0x7E0, { 0x22, 0xF1, 0x89 })), j2534::status::NoError) << lastError();
+
+    EXPECT_FALSE(std::ranges::any_of(device_->commands(), [](const std::string& command) {
+        return command.starts_with("XST");
+    }));
+}
+
+TEST_F(PassThruApiTest, FailedPeriodicTransmitDoesNotFailReads)
+{
+    openAndConnect();
+    device_->respondToPayload("3E80", { "CAN ERROR" });
+    device_->respond("ATCS", { "T:7F R:00" });
+    const auto testerPresent = isoMessage(0x7E0, { 0x3E, 0x80 });
+    j2534::ULong periodicId = 0;
+    ASSERT_EQ(api_.startPeriodic(channelId_, &testerPresent, &periodicId, 20), j2534::status::NoError);
+    ASSERT_TRUE(device_->waitForCommandCount("PAYLOAD 3E80", 2, 2s));
+    std::array<j2534::PassThruMsg, 1> messages {};
+    j2534::ULong count = 1;
+
+    EXPECT_EQ(api_.readMessages(channelId_, messages.data(), &count, 0), j2534::status::BufferEmpty);
+    EXPECT_EQ(api_.stopPeriodic(channelId_, periodicId), j2534::status::NoError);
+}
+
+TEST_F(PassThruApiTest, RecoveredMonitorStallDoesNotFailReads)
+{
+    device_->silence("STM");
+    openAndConnect();
+    device_->respondToPayload("22F188", { "7E8 03 7F 22 31" });
+    ASSERT_TRUE(device_->waitForCommand("STM", 2s));
+
+    ASSERT_EQ(write(isoMessage(0x7E0, { 0x22, 0xF1, 0x88 })), j2534::status::NoError);
+    std::array<j2534::PassThruMsg, 2> messages {};
+    j2534::ULong count = messages.size();
+
+    EXPECT_EQ(api_.readMessages(channelId_, messages.data(), &count, 0), j2534::status::NoError) << lastError();
+    EXPECT_EQ(count, 2u);
+}
+
+TEST_F(PassThruApiTest, UnrecoverableMonitorStallReportsDeviceNotConnected)
+{
+    device_->silence("STM");
+    device_->silence("XX");
+    openAndConnect();
+    ASSERT_TRUE(device_->waitForCommand("STM", 2s));
+
+    EXPECT_EQ(write(isoMessage(0x7E0, { 0x22, 0xF1, 0x88 })), j2534::status::DeviceNotConnected);
+    std::array<j2534::PassThruMsg, 1> messages {};
+    j2534::ULong count = 1;
+    EXPECT_EQ(api_.readMessages(channelId_, messages.data(), &count, 0), j2534::status::DeviceNotConnected);
+}
+
 TEST_F(PassThruApiTest, TimedOutTransmitReturnsTimeoutAndKeepsDeviceUsable)
 {
     openAndConnect();
@@ -433,6 +505,31 @@ TEST_F(PassThruApiTest, TimedOutTransmitReturnsTimeoutAndKeepsDeviceUsable)
 
     EXPECT_EQ(write(isoMessage(0x7E0, { 0x10, 0x02 })), j2534::status::Timeout);
     EXPECT_EQ(write(isoMessage(0x7E0, { 0x22, 0xF1, 0x88 })), j2534::status::NoError);
+}
+
+TEST_F(PassThruApiTest, AdapterIsResynchronizedAfterTransmitTimeout)
+{
+    openAndConnect();
+    device_->respondToPayloadWithoutPrompt("22EE00", { "7E8 03 7F 22 78" });
+    device_->respondToPayload("22EE01", { "7E8 04 62 EE 01 05" });
+
+    EXPECT_EQ(write(isoMessage(0x7E0, { 0x22, 0xEE, 0x00 })), j2534::status::Timeout);
+    ASSERT_TRUE(device_->waitForCommand("STM", 2s));
+
+    EXPECT_TRUE(device_->receiveInterrupted());
+    EXPECT_EQ(write(isoMessage(0x7E0, { 0x22, 0xEE, 0x01 })), j2534::status::NoError);
+}
+
+TEST_F(PassThruApiTest, BatteryVoltageIsReadableAfterTransmitTimeout)
+{
+    openAndConnect();
+    device_->respondToPayloadWithoutPrompt("22EE00", { "7E8 03 7F 22 78" });
+    EXPECT_EQ(write(isoMessage(0x7E0, { 0x22, 0xEE, 0x00 })), j2534::status::Timeout);
+    ASSERT_TRUE(device_->waitForCommand("STM", 2s));
+    j2534::ULong millivolts = 0;
+
+    ASSERT_EQ(api_.ioctl(deviceId_, j2534::ioctl::ReadVbatt, nullptr, &millivolts), j2534::status::NoError);
+    EXPECT_EQ(millivolts, 12345u);
 }
 
 TEST_F(PassThruApiTest, PinSwitchedChannelUsesMediumSpeedPinsOnceSelected)

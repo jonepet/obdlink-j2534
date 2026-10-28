@@ -24,6 +24,9 @@ public:
     // Like respondToPayload, but the prompt stays withheld until the host sends a character,
     // which stops the receive with STOPPED.
     void respondToPayloadWithoutPrompt(const std::string& payloadHex, std::vector<std::string> lines);
+    // Like respondToPayload, but the prompt only goes out when the host's next byte arrives, and
+    // that byte starts a new command line: the host's interrupt crosses the device's prompt.
+    void respondToPayloadWithLatePrompt(const std::string& payloadHex, std::vector<std::string> lines);
     bool receiveInterrupted() const;
     // Lines printed once STM starts; any single character then stops the monitor with STOPPED.
     void monitorLines(std::vector<std::string> lines);
@@ -34,6 +37,7 @@ public:
     std::vector<unsigned> baudRates() const;
 
     bool waitForCommand(const std::string& command, std::chrono::milliseconds timeout);
+    bool waitForCommandCount(const std::string& command, std::size_t count, std::chrono::milliseconds timeout);
 
     void write(std::string_view bytes) override;
     std::size_t read(char* buffer, std::size_t capacity, std::chrono::milliseconds timeout) override;
@@ -53,6 +57,9 @@ private:
     std::map<std::string, std::vector<std::string>> payloadResponses_;
     std::vector<std::string> monitorLines_;
     std::set<std::string> promptWithheld_;
+    std::set<std::string> promptLate_;
+    bool promptPending_ = false;
+    bool commandTruncated_ = false;
     bool monitoring_ = false;
     bool receiving_ = false;
     bool receiveInterrupted_ = false;

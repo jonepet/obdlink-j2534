@@ -27,7 +27,7 @@ A purpose-built J2534 interface is designed around the pass-thru API. This proje
 - **It mostly listens while it is sending.** The adapter collects replies in the window right after it sends a request. Between requests it can passively watch one bus, but it is not a full always-on receiver: a long multi-part reply that only begins after that window arrives incomplete. Dedicated hardware receives continuously.
 - **It is slower per message.** Every message crosses a serial link to the adapter and back, which adds overhead a built-in device does not have. It is quick enough for diagnostics, but not as fast as purpose-built hardware.
 - **Some settings are fixed or unavailable.** Block size and separation time (the module's own values are always used), extended addressing, programming voltage and CAN FD are fixed or not supported. Most tools accept this and carry on, but the behaviour is not identical to a full device.
-- **Not proven for programming.** It has been used for diagnostics, service procedures and module configuration, but never to flash firmware. A flash sends far more data over a much longer time and erases the module before writing — and a flash that is interrupted can leave a module unusable. Treat flashing as untested and risky.
+- **Not proven for programming.** With FDRS, one module software update completed and another failed part-way (see [Tested with FDRS](#tested-with-fdrs)).
 
 ## Build
 
@@ -87,6 +87,9 @@ Values under `HKLM\SOFTWARE\PassThruSupport.04.04\OBDLink STN` (32-bit view for 
 - Between transmits the adapter monitors one bus that has channels with receive filters. The adapter sends no flow control while monitoring, so a multi-frame response received this way delivers only its first frame.
 - Flow control and consecutive frame timeouts are the ISO 15765-2 N_Bs and N_Cr limits (1000 ms).
 - The device is declared lost when the adapter stays silent during a transmit longer than ISO 14229-2 P2*Server_max (5000 ms) plus N_Bs and the maximum STmin (127 ms) for each consecutive frame sent.
+- After any adapter timeout the driver interrupts the adapter and waits for its prompt before the next command; an adapter that does not return to a prompt is reported as `ERR_DEVICE_NOT_CONNECTED` until the device is reopened.
+- An interrupt answered without `STOPPED` means the adapter had already finished; the driver then clears the adapter's command line before sending anything else.
+- Adapter errors while monitoring between transmits, and failed periodic messages, are written to the log file and do not fail `PassThruReadMsgs` or `PassThruWriteMsgs`. Filter settings the adapter rejects are reported on the next read, and an adapter that cannot be recovered makes reads return `ERR_DEVICE_NOT_CONNECTED`.
 - `PassThruWriteMsgs` completes each transmission before returning; its timeout argument is not used.
 - One CAN bus is active at a time; channels on different pins switch the adapter between buses before each transmit.
 - Up to 64 message filters per channel.
@@ -104,13 +107,15 @@ Tested with Ford FDRS 50.5.2, the 32-bit DLL, an OBDLink EX and one vehicle.
 | Reading DTCs | Works |
 | Service procedures | Works |
 | Module configuration | Works |
-| Module programming | Not tested |
+| Module programming: DC/DC converter software update | Completed, reported successful (0.3.0) |
+| Module programming: RFA software update | Failed part-way (0.3.0) |
+| Module programming with 0.4.0 | Not tested |
 
 FDRS logs errors for removing flow control filters and for the unsupported `CAN_MIXED_FORMAT` setting, and continues without that setting.
 
 ## Status
 
-Work in progress. Diagnostics work with FORScan and FDRS, and service procedures and module configuration work with FDRS, on the tested adapter and vehicle. Module programming is untested. CAN FD and ISO 15765 extended addressing are not supported.
+Work in progress. Diagnostics work with FORScan and FDRS, and service procedures and module configuration work with FDRS, on the tested adapter and vehicle. Module programming is not proven: with 0.3.0 one software update completed and one failed part-way, and 0.4.0 has not been tested for programming. CAN FD and ISO 15765 extended addressing are not supported.
 
 ## Trademarks and affiliation
 
