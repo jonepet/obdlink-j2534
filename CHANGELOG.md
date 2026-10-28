@@ -10,7 +10,8 @@
 
 ### Tested
 
-- 0.3.0 with FDRS: a DC/DC converter software update completed and was reported successful. An RFA software update failed part-way.
+- 0.4.0 with FDRS on a 2021 Ford Mustang Mach-E: SOBDM, SOBDMC and PCM software updates completed in one session and were reported successful.
+- 0.3.0 with FDRS on the same vehicle: a DC/DC converter software update completed and was reported successful. An RFA software update failed part-way; it was then completed with another adapter and has not been re-tested with 0.4.0, so whether it succeeds with 0.4.0 is unknown.
 
 ## 0.3.0 — 2026-10-26
 

@@ -27,7 +27,7 @@ A purpose-built J2534 interface is designed around the pass-thru API. This proje
 - **It mostly listens while it is sending.** The adapter collects replies in the window right after it sends a request. Between requests it can passively watch one bus, but it is not a full always-on receiver: a long multi-part reply that only begins after that window arrives incomplete. Dedicated hardware receives continuously.
 - **It is slower per message.** Every message crosses a serial link to the adapter and back, which adds overhead a built-in device does not have. It is quick enough for diagnostics, but not as fast as purpose-built hardware.
 - **Some settings are fixed or unavailable.** Block size and separation time (the module's own values are always used), extended addressing, programming voltage and CAN FD are fixed or not supported. Most tools accept this and carry on, but the behaviour is not identical to a full device.
-- **Not proven for programming.** With FDRS, one module software update completed and another failed part-way (see [Tested with FDRS](#tested-with-fdrs)).
+- **Programming tested on one vehicle only.** With FDRS, four module software updates completed and one failed part-way (see [Tested with FDRS](#tested-with-fdrs)).
 
 ## Build
 
@@ -99,7 +99,7 @@ Values under `HKLM\SOFTWARE\PassThruSupport.04.04\OBDLink STN` (32-bit view for 
 
 ## Tested with FDRS
 
-Tested with Ford FDRS 50.5.2, the 32-bit DLL, an OBDLink EX and one vehicle.
+Tested with Ford FDRS 50.5.2, the 32-bit DLL, an OBDLink EX and a 2021 Ford Mustang Mach-E.
 
 | Operation | Result |
 |---|---|
@@ -108,14 +108,14 @@ Tested with Ford FDRS 50.5.2, the 32-bit DLL, an OBDLink EX and one vehicle.
 | Service procedures | Works |
 | Module configuration | Works |
 | Module programming: DC/DC converter software update | Completed, reported successful (0.3.0) |
-| Module programming: RFA software update | Failed part-way (0.3.0) |
-| Module programming with 0.4.0 | Not tested |
+| Module programming: RFA software update | Failed part-way (0.3.0). Completed afterwards with another adapter; not re-tested with 0.4.0, so whether it succeeds with the current version is unknown |
+| Module programming: SOBDM, SOBDMC and PCM software updates in one FDRS session | Completed, reported successful (0.4.0) |
 
 FDRS logs errors for removing flow control filters and for the unsupported `CAN_MIXED_FORMAT` setting, and continues without that setting.
 
 ## Status
 
-Work in progress. Diagnostics work with FORScan and FDRS, and service procedures and module configuration work with FDRS, on the tested adapter and vehicle. Module programming is not proven: with 0.3.0 one software update completed and one failed part-way, and 0.4.0 has not been tested for programming. CAN FD and ISO 15765 extended addressing are not supported.
+Work in progress. Diagnostics work with FORScan and FDRS, and service procedures and module configuration work with FDRS, on the tested adapter and vehicle. Module programming has been tested on one vehicle: with 0.3.0 one software update completed and one failed part-way, and with 0.4.0 three software updates completed. CAN FD and ISO 15765 extended addressing are not supported.
 
 ## Trademarks and affiliation
 
